@@ -41,13 +41,20 @@ function enrichSide(q, { S, K, T, r, divYield, type }) {
 
   if (Number.isFinite(q.delta)) {
     q.greeksSource = q.greeksSource ?? "robinhood";
-  } else if (Number.isFinite(q.iv)) {
+  }
+  // backfill whatever greeks are still missing (gamma/theta/vega/rho, and delta itself
+  // when absent) from the computed IV — independent of whether delta was already present
+  if (Number.isFinite(q.iv)) {
     const g = bsGreeks({ ...base, sigma: q.iv });
     if (g) {
+      let filledAny = false;
       for (const k of GREEK_KEYS) {
-        if (!Number.isFinite(q[k])) q[k] = round(g[k]);
+        if (!Number.isFinite(q[k])) {
+          q[k] = round(g[k]);
+          filledAny = true;
+        }
       }
-      q.greeksSource = "computed";
+      if (filledAny) q.greeksSource = q.greeksSource ?? "computed";
     }
   }
 }

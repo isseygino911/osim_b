@@ -12,5 +12,7 @@ export async function readAutopilotState() {
 
 export async function writeAutopilotState(state) {
   await fs.mkdir(path.dirname(AUTOPILOT_STATE_PATH), { recursive: true });
-  await fs.writeFile(AUTOPILOT_STATE_PATH, JSON.stringify(state, null, 2));
+  const tmpPath = `${AUTOPILOT_STATE_PATH}.tmp`;
+  await fs.writeFile(tmpPath, JSON.stringify(state, null, 2));
+  await fs.rename(tmpPath, AUTOPILOT_STATE_PATH);
 }

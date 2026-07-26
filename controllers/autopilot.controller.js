@@ -5,8 +5,7 @@ import * as autopilotService from "../services/autopilot.service.js";
 
 export async function getAutopilot(_req, res) {
   try {
-    const status = autopilotService.getStatus() || (await autopilotService.init(readSnapshot));
-    res.json(status);
+    res.json(autopilotService.getStatus());
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

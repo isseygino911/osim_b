@@ -17,5 +17,7 @@ export async function readSnapshot() {
 
 export async function writeSnapshot(snapshot) {
   await fs.mkdir(path.dirname(SNAPSHOT_PATH), { recursive: true });
-  await fs.writeFile(SNAPSHOT_PATH, JSON.stringify(snapshot, null, 2));
+  const tmpPath = `${SNAPSHOT_PATH}.tmp`;
+  await fs.writeFile(tmpPath, JSON.stringify(snapshot, null, 2));
+  await fs.rename(tmpPath, SNAPSHOT_PATH);
 }

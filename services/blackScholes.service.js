@@ -63,9 +63,12 @@ export function bsGreeks({ S, K, T, r, sigma, q = 0, type }) {
   if (!validCommon(S, K, T, r, q) || !Number.isFinite(sigma) || !validType(type)) return null;
   if (T <= 0 || sigma <= 0) {
     // expired / deterministic contract: intrinsic value, step delta, flat everything else
-    const price = bsPrice({ S, K, T: Math.max(T, 0), r, sigma: 0, q, type });
-    const itm = type === "call" ? S > K : S < K;
-    const delta = itm ? (type === "call" ? 1 : -1) * Math.exp(-q * Math.max(T, 0)) : 0;
+    const Tc = Math.max(T, 0);
+    const price = bsPrice({ S, K, T: Tc, r, sigma: 0, q, type });
+    // itm/delta must agree with the discounted-forward comparison bsPrice uses above,
+    // not raw S vs K, or price and delta can disagree in sign near the money when r != q
+    const itm = type === "call" ? S * Math.exp(-q * Tc) > K * Math.exp(-r * Tc) : S * Math.exp(-q * Tc) < K * Math.exp(-r * Tc);
+    const delta = itm ? (type === "call" ? 1 : -1) * Math.exp(-q * Tc) : 0;
     return { price, delta, gamma: 0, theta: 0, vega: 0, rho: 0 };
   }
   const { d1, d2, sqrtT } = dValues(S, K, T, r, sigma, q);

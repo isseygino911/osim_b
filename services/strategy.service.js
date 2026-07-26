@@ -1,3 +1,4 @@
+import { yearFraction } from "./blackScholes.service.js";
 import { assessChain, computeOptionsBias } from "./greeks.service.js";
 import { computeIndicators } from "./indicators.service.js";
 
@@ -20,10 +21,12 @@ export const RISK = {
 };
 
 function pickExpiration(expirations, chains, spot, minDaysOut = 3, maxDaysOut = 10) {
-  const now = Date.now();
+  const now = new Date();
+  // same 21:00 UTC market-close convention as yearFraction (used for actual BS pricing/theta
+  // on this same expiration string), so the DTE filter and theta-burn gate never disagree
   const candidates = expirations
     .filter((d) => chains[d])
-    .map((d) => ({ d, days: (new Date(d).getTime() - now) / 86400000 }))
+    .map((d) => ({ d, days: yearFraction(d, now) * 365 }))
     .filter((x) => x.days >= minDaysOut && x.days <= maxDaysOut)
     .sort((a, b) => a.days - b.days);
   // nearest-first, but step past expirations whose ATM theta burn is brutal —
@@ -221,7 +224,8 @@ export function decideTrade({ signal, snapshot, portfolio, dayPnlPct }) {
   }
 
   const type = signal.action === "buy_call" ? "call" : "put";
-  const spot = snapshot.underlying.price;
+  const spot = snapshot?.underlying?.price;
+  if (!Number.isFinite(spot)) return { type: "none", reason: "No underlying price in snapshot." };
   const expiration = pickExpiration(snapshot.expirations || [], snapshot.chains || {}, spot);
   if (!expiration) return { type: "none", reason: "No usable expiration in snapshot." };
   const chain = snapshot.chains[expiration];

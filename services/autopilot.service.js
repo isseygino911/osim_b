@@ -83,7 +83,9 @@ function markPositions(state, chains) {
     const c = chains[pos.expiration];
     const row = c?.strikes?.find((st) => st.strike === pos.strike);
     const q = row?.[pos.type];
-    if (q) pos.mark = (q.bid + q.ask) / 2;
+    if (q) {
+      pos.mark = Number.isFinite(q.bid) && Number.isFinite(q.ask) ? (q.bid + q.ask) / 2 : Number.isFinite(q.mark) ? q.mark : pos.mark;
+    }
   }
 }
 

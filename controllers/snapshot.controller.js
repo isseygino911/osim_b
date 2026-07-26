@@ -22,8 +22,11 @@ export async function getSnapshot(_req, res) {
 // Lets Claude (or any trusted local process) push a freshly-fetched snapshot.
 export async function postSnapshot(req, res) {
   const body = req.body;
-  if (!body || typeof body !== "object") {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
     return res.status(400).json({ error: "Body must be a JSON object" });
+  }
+  if (!body.underlying || !body.expirations || !body.chains || !body.candles) {
+    return res.status(400).json({ error: "Body must include underlying, expirations, chains, and candles" });
   }
   try {
     await writeSnapshot({ ...body, fetchedAt: new Date().toISOString() });
