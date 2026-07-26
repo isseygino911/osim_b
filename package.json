@@ -5,13 +5,14 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "start": "node index.js",
+    "start": "node --env-file=.env index.js",
     "test": "node --test"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@google/genai": "^2.13.0",
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "rss-parser": "^3.13.0"

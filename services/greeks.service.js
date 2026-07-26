@@ -73,6 +73,93 @@ export function enrichSnapshot(snapshot) {
   return out;
 }
 
+// Directional read of options positioning, distinct from the quality-only options
+// score: 25-delta put/call IV skew (fear gauge) blended with put/call open-interest
+// ratio when available. Positive bias = bullish positioning. Runs on an ENRICHED
+// chain — v1 snapshots work via computed IV/delta; OI is genuinely optional.
+export const BASELINE_PUT_SKEW = 0.03; // QQQ 25Δ put-call IV skew is normally ~+3 vol pts
+const SKEW_SPAN = 0.05; // 5 vol pts beyond/below baseline saturates the score
+const OI_BASELINE_RATIO = 1.2; // normal put/call OI for an index ETF (hedging flow)
+const DELTA_TARGET = 0.25;
+const DELTA_TOLERANCE = 0.15; // chain too narrow to bracket 25Δ → skew factor is null
+
+function clamp100(x) {
+  return Math.max(-100, Math.min(100, x));
+}
+
+function nearestByDelta(strikes, side, sign) {
+  let best = null;
+  let bestDiff = Infinity;
+  for (const row of strikes) {
+    const q = row[side];
+    if (!q || !Number.isFinite(q.delta) || !Number.isFinite(q.iv)) continue;
+    const diff = Math.abs(q.delta - sign * DELTA_TARGET);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      best = q;
+    }
+  }
+  return bestDiff <= DELTA_TOLERANCE ? best : null;
+}
+
+export function computeOptionsBias(chain, spot) {
+  const empty = { bias: 0, factors: null };
+  if (!chain?.strikes?.length || !Number.isFinite(spot)) return empty;
+
+  const call25 = nearestByDelta(chain.strikes, "call", 1);
+  const put25 = nearestByDelta(chain.strikes, "put", -1);
+  let skewBias = null;
+  let ivSkew = null;
+  if (call25 && put25) {
+    ivSkew = round(put25.iv - call25.iv);
+    // skew at baseline → 0; panic put bid (+0.08) → -100 bearish; flat/inverted → bullish
+    skewBias = clamp100((-(ivSkew - BASELINE_PUT_SKEW) / SKEW_SPAN) * 100);
+  }
+
+  let oiBias = null;
+  let oiRatio = null;
+  let putOi = 0;
+  let callOi = 0;
+  let oiRows = 0;
+  for (const row of chain.strikes) {
+    if (Number.isFinite(row.call?.openInterest) && Number.isFinite(row.put?.openInterest)) {
+      callOi += row.call.openInterest;
+      putOi += row.put.openInterest;
+      oiRows += 1;
+    }
+  }
+  if (oiRows >= 3 && callOi > 0) {
+    oiRatio = round(putOi / callOi, 2);
+    // log-symmetric around the hedging-flow baseline: ratio 2.4 → -100, 0.6 → +100
+    oiBias = clamp100((-Math.log(oiRatio / OI_BASELINE_RATIO) / Math.LN2) * 100);
+  }
+
+  if (skewBias === null && oiBias === null) return empty;
+  const bias = skewBias !== null && oiBias !== null ? 0.7 * skewBias + 0.3 * oiBias : (skewBias ?? oiBias);
+
+  // ATM IV for display context, same nearest-strike approach as assessChain
+  let atmIv = null;
+  let atmDiff = Infinity;
+  for (const row of chain.strikes) {
+    const diff = Math.abs(row.strike - spot);
+    if (diff < atmDiff && Number.isFinite(row.call?.iv)) {
+      atmDiff = diff;
+      atmIv = round(row.call.iv);
+    }
+  }
+
+  return {
+    bias: Number(bias.toFixed(1)),
+    factors: {
+      ivSkew,
+      callIv25: call25 ? round(call25.iv) : null,
+      putIv25: put25 ? round(put25.iv) : null,
+      oiRatio,
+      atmIv,
+    },
+  };
+}
+
 // Chain-quality summary for one expiration, evaluated around the ATM strike.
 // Feeds the options-conditions dampener in strategy.service and GET /api/greeks.
 export function assessChain(chain, spot, { minOpenInterest = 100 } = {}) {

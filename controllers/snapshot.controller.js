@@ -2,7 +2,7 @@ import { readSnapshot, readSnapshotRaw, writeSnapshot } from "../models/snapshot
 import { assessChain, DEFAULT_RISK_FREE_RATE, enrichSnapshot } from "../services/greeks.service.js";
 import { computeIndicators } from "../services/indicators.service.js";
 import { getNews } from "../services/news.service.js";
-import { computeSignal, RISK } from "../services/strategy.service.js";
+import { computeSignal, previewPicks, RISK } from "../services/strategy.service.js";
 
 // Serves whatever Robinhood data was last written to data/snapshot.json.
 // That file is produced out-of-band by Claude (which holds the authenticated
@@ -73,6 +73,7 @@ export async function getGreeks(_req, res) {
       underlying: enriched.underlying ?? null,
       chains: enriched.chains ?? {},
       summary,
+      preview: previewPicks(enriched),
       fetchedAt: enriched.fetchedAt ?? null,
     });
   } catch (e) {

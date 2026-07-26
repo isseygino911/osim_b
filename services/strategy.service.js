@@ -1,4 +1,4 @@
-import { assessChain } from "./greeks.service.js";
+import { assessChain, computeOptionsBias } from "./greeks.service.js";
 import { computeIndicators } from "./indicators.service.js";
 
 // Risk controls — deliberately aggressive since the stated goal is 10%/week,
@@ -89,7 +89,68 @@ function computeOptionsScore(snapshot) {
   const optionsScore = -Math.min(100, penaltyIv + penaltySpread + penaltyOi);
   return {
     optionsScore: Number(optionsScore.toFixed(1)),
-    optionsFactors: { expiration, atmIv, avgSpreadPct, liquidityOk },
+    optionsFactors: {
+      expiration,
+      atmIv,
+      avgSpreadPct,
+      liquidityOk,
+      penalties: { iv: Number(penaltyIv.toFixed(1)), spread: Number(penaltySpread.toFixed(1)), oi: penaltyOi },
+    },
+  };
+}
+
+// What the bot would buy right now, per side — surfaced in the UI so the strike
+// selection logic is observable without waiting for a live trade. Pure, no I/O.
+export function previewPicks(snapshot) {
+  const spot = snapshot?.underlying?.price;
+  if (!Number.isFinite(spot)) return null;
+  const expiration = pickExpiration(snapshot.expirations || [], snapshot.chains || {}, spot);
+  if (!expiration) return null;
+  const chain = snapshot.chains?.[expiration];
+  const out = { expiration, call: null, put: null };
+  for (const type of ["call", "put"]) {
+    const hasDeltas = chain?.strikes?.some((s) => Number.isFinite(s[type]?.delta));
+    const row = hasDeltas ? pickStrikeByDelta(chain, type, RISK.targetDelta) : pickStrike(chain, spot, type);
+    if (row) {
+      const q = row[type];
+      out[type] = {
+        strike: row.strike,
+        delta: Number.isFinite(q?.delta) ? q.delta : null,
+        iv: Number.isFinite(q?.iv) ? q.iv : null,
+        theta: Number.isFinite(q?.theta) ? q.theta : null,
+        mid: Number.isFinite(q?.bid) && Number.isFinite(q?.ask) ? Number(((q.bid + q.ask) / 2).toFixed(2)) : null,
+        mode: hasDeltas ? "delta-targeted" : "1%-OTM fallback",
+      };
+    } else if (hasDeltas) {
+      out[type] = { strike: null, mode: "all strikes filtered (OI/spread)" };
+    }
+  }
+  return out;
+}
+
+// Compares what the news says against what the options market is pricing.
+// INFORMATIONAL ONLY — the verdict never feeds combinedScore or action; the
+// penalty-only dampener contract ("direction never flips") stays intact.
+const DIVERGENCE_NEWS_MIN = 10; // matches the news sentiment band
+const DIVERGENCE_BIAS_MIN = 15;
+
+export function assessDivergence(newsScore, optionsBias) {
+  if (Math.abs(newsScore) < DIVERGENCE_NEWS_MIN || Math.abs(optionsBias) < DIVERGENCE_BIAS_MIN) {
+    return { verdict: "neutral", implication: "Neither news flow nor options positioning shows strong conviction." };
+  }
+  if (Math.sign(newsScore) === Math.sign(optionsBias)) {
+    const lean = newsScore > 0 ? "bullish" : "bearish";
+    return { verdict: "aligned", implication: `News flow and options positioning both lean ${lean} — confirmation.` };
+  }
+  if (newsScore > 0) {
+    return {
+      verdict: "divergent",
+      implication: "Headlines lean bullish but options are pricing downside protection — contrarian caution on calls.",
+    };
+  }
+  return {
+    verdict: "divergent",
+    implication: "Headlines lean bearish but options positioning looks complacent — downside moves could be sharp; puts relatively cheap.",
   };
 }
 
@@ -113,6 +174,13 @@ export function computeSignal(snapshot, news) {
   if (combinedScore >= RISK.minSignalScoreToTrade) action = "buy_call";
   else if (combinedScore <= -RISK.minSignalScoreToTrade) action = "buy_put";
 
+  // Directional comparison for the UI — informational only, never moves the score
+  const biasChain = optionsFactors ? snapshot.chains?.[optionsFactors.expiration] : null;
+  const { bias: optionsBias, factors: biasFactors } = biasChain
+    ? computeOptionsBias(biasChain, snapshot.underlying?.price)
+    : { bias: 0, factors: null };
+  const { verdict, implication } = assessDivergence(newsScore, optionsBias);
+
   const optionsNote = optionsScore < 0 ? `, options=${optionsScore.toFixed(1)}` : "";
   return {
     action,
@@ -121,6 +189,15 @@ export function computeSignal(snapshot, news) {
     newsScore,
     optionsScore,
     optionsFactors,
+    newsVsOptions: {
+      newsScore,
+      newsSentiment: news?.overall?.sentiment ?? "unknown",
+      sampleSize: news?.overall?.sampleSize ?? 0,
+      optionsBias,
+      verdict,
+      implication,
+      factors: biasFactors,
+    },
     indicators,
     reason: `tech=${techScore.toFixed(1)} (${indicators.composite.label}), news=${newsScore.toFixed(1)} (${news?.overall?.sentiment ?? "unknown"})${optionsNote}`,
   };

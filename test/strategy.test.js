@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { computeSignal, decideTrade } from "../services/strategy.service.js";
+import { assessDivergence, computeSignal, decideTrade } from "../services/strategy.service.js";
 
 // 60 synthetic daily candles, gently trending up — enough history for every indicator.
 function candles() {
@@ -81,6 +81,33 @@ test("computeSignal without chains reduces to the plain tech/news blend", () => 
   assert.equal(sig.optionsScore, 0);
   assert.equal(sig.optionsFactors, null);
   assert.equal(sig.combinedScore, Number((sig.techScore * 0.75 + sig.newsScore * 0.25).toFixed(1)));
+});
+
+test("assessDivergence verdict matrix", () => {
+  assert.equal(assessDivergence(50, 40).verdict, "aligned");
+  assert.equal(assessDivergence(-50, -40).verdict, "aligned");
+  assert.equal(assessDivergence(50, -40).verdict, "divergent");
+  assert.equal(assessDivergence(-50, 40).verdict, "divergent");
+  assert.equal(assessDivergence(5, 80).verdict, "neutral", "weak news conviction");
+  assert.equal(assessDivergence(50, 10).verdict, "neutral", "bias below BIAS_MIN edge");
+  assert.ok(assessDivergence(50, -40).implication.includes("caution"));
+});
+
+test("newsVsOptions is informational only — combinedScore unaffected by bias factors", () => {
+  const exp = expiryIso(5);
+  const row = (putIv) => ({
+    strike: 100,
+    call: { bid: 2.0, ask: 2.1, mark: 2.05, delta: 0.25, iv: 0.2, theta: -0.05 },
+    put: { bid: 1.9, ask: 2.0, mark: 1.95, delta: -0.25, iv: putIv, theta: -0.05 },
+  });
+  const base = { underlying: { price: 100 }, expirations: [exp], candles: candles() };
+  const neutralSkew = computeSignal({ ...base, chains: { [exp]: { strikes: [row(0.23)] } } }, null);
+  const panicSkew = computeSignal({ ...base, chains: { [exp]: { strikes: [row(0.3)] } } }, null);
+  assert.ok(panicSkew.newsVsOptions.optionsBias < neutralSkew.newsVsOptions.optionsBias, "bias reflects the skew");
+  assert.equal(panicSkew.combinedScore, neutralSkew.combinedScore, "verdict never moves the score");
+  for (const key of ["newsScore", "newsSentiment", "sampleSize", "optionsBias", "verdict", "implication", "factors"]) {
+    assert.ok(key in panicSkew.newsVsOptions, `newsVsOptions.${key} present`);
+  }
 });
 
 test("computeSignal dampens the score in a hostile options environment", () => {
