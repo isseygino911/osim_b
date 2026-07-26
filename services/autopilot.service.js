@@ -1,4 +1,4 @@
-import { readAutopilotState, writeAutopilotState } from "../models/autopilot.model.js";
+import { listAutopilotSymbols, readAutopilotState, writeAutopilotState } from "../models/autopilot.model.js";
 import { enrichSnapshot } from "./greeks.service.js";
 import { getNews } from "./news.service.js";
 import { computeSignal, decideExits, decideTrade } from "./strategy.service.js";
@@ -15,12 +15,13 @@ function startOfWeek(d = new Date()) {
   return date.toISOString();
 }
 
-function freshState() {
+function freshState(symbol) {
   const weekStart = startOfWeek();
   return {
+    symbol,
     enabled: false,
     cash: CASH_START,
-    positions: [], // {id, type, strike, expiration, qty, entryPrice, mark, openedAt}
+    positions: [], // {id, symbol, type, strike, expiration, qty, entryPrice, mark, openedAt}
     trades: [], // append-only log, newest first
     weekStart,
     weekStartEquity: CASH_START,
@@ -32,20 +33,28 @@ function freshState() {
   };
 }
 
-let state = null;
+// One isolated paper portfolio per symbol; the single timer serves them all.
+const states = new Map();
 let timer = null;
 
-async function load() {
+async function loadState(symbol) {
+  if (states.has(symbol)) return states.get(symbol);
+  let state;
   try {
-    state = await readAutopilotState();
+    state = await readAutopilotState(symbol);
+    // Backfill for pre-multi-symbol QQQ data that predates the symbol fields.
+    state.symbol ??= symbol;
+    for (const pos of state.positions ?? []) pos.symbol ??= symbol;
+    for (const trade of state.trades ?? []) trade.symbol ??= symbol;
   } catch {
-    state = freshState();
+    state = freshState(symbol);
   }
+  states.set(symbol, state);
   return state;
 }
 
-async function persist() {
-  await writeAutopilotState(state);
+async function persist(symbol) {
+  await writeAutopilotState(symbol, states.get(symbol));
 }
 
 function equityOf(state) {
@@ -78,8 +87,10 @@ function rolloverDayIfNeeded(state) {
   }
 }
 
-function markPositions(state, chains) {
+function markPositions(state, chains, symbol) {
   for (const pos of state.positions) {
+    // A position from another symbol must never be marked off this chain.
+    if (pos.symbol && pos.symbol !== symbol) continue;
     const c = chains[pos.expiration];
     const row = c?.strikes?.find((st) => st.strike === pos.strike);
     const q = row?.[pos.type];
@@ -95,6 +106,7 @@ function closePositionInternal(state, pos, reason) {
   state.positions = state.positions.filter((p) => p.id !== pos.id);
   state.trades.unshift({
     id: pos.id,
+    symbol: pos.symbol ?? state.symbol,
     action: "SELL",
     type: pos.type,
     strike: pos.strike,
@@ -111,6 +123,7 @@ function openPositionInternal(state, order, reason) {
   const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const pos = {
     id,
+    symbol: state.symbol,
     type: order.optionType,
     strike: order.strike,
     expiration: order.expiration,
@@ -123,6 +136,7 @@ function openPositionInternal(state, order, reason) {
   state.positions.push(pos);
   state.trades.unshift({
     id,
+    symbol: pos.symbol,
     action: "BUY",
     type: pos.type,
     strike: pos.strike,
@@ -134,9 +148,8 @@ function openPositionInternal(state, order, reason) {
   });
 }
 
-async function runOnce(readSnapshot) {
-  if (!state) await load();
-  const s = state;
+async function runOnce(symbol, readSnapshot) {
+  const s = await loadState(symbol);
   rolloverWeekIfNeeded(s);
   rolloverDayIfNeeded(s);
 
@@ -144,15 +157,15 @@ async function runOnce(readSnapshot) {
   try {
     // enrich with greeks (computed where Robinhood's are absent) so the strategy
     // can pick strikes by delta and dampen the signal on options conditions
-    snapshot = enrichSnapshot(await readSnapshot());
+    snapshot = enrichSnapshot(await readSnapshot(symbol));
   } catch (e) {
     s.lastRunAt = new Date().toISOString();
-    s.lastDecision = { type: "none", reason: `No snapshot available: ${e.message}` };
-    await persist();
+    s.lastDecision = { type: "none", reason: `No snapshot available for ${symbol}: ${e.message}` };
+    await persist(symbol);
     return s;
   }
 
-  markPositions(s, snapshot.chains || {});
+  markPositions(s, snapshot.chains || {}, symbol);
 
   // 1. Exit checks first (stop-loss / take-profit) — always run, even if disabled,
   //    so risk controls stay active on positions already open.
@@ -164,12 +177,12 @@ async function runOnce(readSnapshot) {
   if (!s.enabled) {
     s.lastRunAt = new Date().toISOString();
     if (exits.length) s.lastDecision = { type: "exit_only", reason: `Closed ${exits.length} position(s) on risk rules.` };
-    await persist();
+    await persist(symbol);
     return s;
   }
 
   // 2. Entry decision
-  const news = await getNews().catch(() => null);
+  const news = await getNews({ symbol, name: snapshot.underlying?.name }).catch(() => null);
   const signal = computeSignal(snapshot, news);
   const equity = equityOf(s);
   const dayPnlPct = ((equity - s.dayStartEquity) / s.dayStartEquity) * 100;
@@ -186,12 +199,11 @@ async function runOnce(readSnapshot) {
 
   s.lastRunAt = new Date().toISOString();
   s.lastDecision = { ...decision, signal: { action: signal.action, combinedScore: signal.combinedScore, reason: signal.reason } };
-  await persist();
+  await persist(symbol);
   return s;
 }
 
-export function getStatus() {
-  if (!state) return null;
+function statusOf(state) {
   const equity = equityOf(state);
   const weekPnlPct = Number((((equity - state.weekStartEquity) / state.weekStartEquity) * 100).toFixed(2));
   return {
@@ -203,30 +215,50 @@ export function getStatus() {
   };
 }
 
+export async function getStatus(symbol) {
+  return statusOf(await loadState(symbol));
+}
+
+// One tick runs every persisted or in-memory symbol, but only does work for
+// symbols that are enabled or still hold positions (exits stay active when disabled).
+async function tick(readSnapshot) {
+  const symbols = new Set([...(await listAutopilotSymbols()), ...states.keys()]);
+  for (const symbol of symbols) {
+    try {
+      const state = await loadState(symbol);
+      if (!state.enabled && state.positions.length === 0) continue;
+      await runOnce(symbol, readSnapshot);
+    } catch (e) {
+      console.error(`[autopilot] loop error (${symbol}):`, e.message);
+    }
+  }
+}
+
 export async function init(readSnapshot) {
-  await load();
+  for (const symbol of await listAutopilotSymbols()) {
+    await loadState(symbol);
+  }
   if (timer) clearInterval(timer);
   timer = setInterval(() => {
-    runOnce(readSnapshot).catch((e) => console.error("[autopilot] loop error:", e.message));
+    tick(readSnapshot).catch((e) => console.error("[autopilot] loop error:", e.message));
   }, LOOP_INTERVAL_MS);
-  return getStatus();
 }
 
-export async function setEnabled(enabled, readSnapshot) {
-  if (!state) await load();
+export async function setEnabled(symbol, enabled, readSnapshot) {
+  const state = await loadState(symbol);
   state.enabled = enabled;
-  await persist();
-  if (enabled) runOnce(readSnapshot).catch((e) => console.error("[autopilot] loop error:", e.message));
-  return getStatus();
+  await persist(symbol);
+  if (enabled) runOnce(symbol, readSnapshot).catch((e) => console.error(`[autopilot] loop error (${symbol}):`, e.message));
+  return getStatus(symbol);
 }
 
-export async function triggerRun(readSnapshot) {
-  await runOnce(readSnapshot);
-  return getStatus();
+export async function triggerRun(symbol, readSnapshot) {
+  await runOnce(symbol, readSnapshot);
+  return getStatus(symbol);
 }
 
-export async function resetState() {
-  state = freshState();
-  await persist();
-  return getStatus();
+export async function resetState(symbol) {
+  states.set(symbol, freshState(symbol));
+  await persist(symbol);
+  return getStatus(symbol);
 }

@@ -139,6 +139,112 @@ function stochastic(bars, period = 14, smoothK = 3) {
   return { k: kOut, d: dOut };
 }
 
+// Wilder-smoothed +DI/-DI/ADX. Deliberately not built on ema() — Wilder's alpha (1/period)
+// differs from the standard EMA alpha (2/(period+1)) used everywhere else in this file.
+function adx(bars, period = 14) {
+  const n = bars.length;
+  const plusDI = new Array(n).fill(null);
+  const minusDI = new Array(n).fill(null);
+  const adxOut = new Array(n).fill(null);
+  if (n <= period) return { adx: adxOut, plusDI, minusDI };
+
+  const tr = new Array(n).fill(0);
+  const plusDM = new Array(n).fill(0);
+  const minusDM = new Array(n).fill(0);
+  for (let i = 1; i < n; i++) {
+    const upMove = bars[i].high - bars[i - 1].high;
+    const downMove = bars[i - 1].low - bars[i].low;
+    plusDM[i] = upMove > downMove && upMove > 0 ? upMove : 0;
+    minusDM[i] = downMove > upMove && downMove > 0 ? downMove : 0;
+    tr[i] = Math.max(bars[i].high - bars[i].low, Math.abs(bars[i].high - bars[i - 1].close), Math.abs(bars[i].low - bars[i - 1].close));
+  }
+
+  let smoothTR = 0;
+  let smoothPlusDM = 0;
+  let smoothMinusDM = 0;
+  for (let i = 1; i <= period; i++) {
+    smoothTR += tr[i];
+    smoothPlusDM += plusDM[i];
+    smoothMinusDM += minusDM[i];
+  }
+  const dx = new Array(n).fill(null);
+  const setDI = (i) => {
+    plusDI[i] = smoothTR === 0 ? 0 : (100 * smoothPlusDM) / smoothTR;
+    minusDI[i] = smoothTR === 0 ? 0 : (100 * smoothMinusDM) / smoothTR;
+    const sum = plusDI[i] + minusDI[i];
+    dx[i] = sum === 0 ? 0 : (100 * Math.abs(plusDI[i] - minusDI[i])) / sum;
+  };
+  setDI(period);
+  for (let i = period + 1; i < n; i++) {
+    smoothTR = smoothTR - smoothTR / period + tr[i];
+    smoothPlusDM = smoothPlusDM - smoothPlusDM / period + plusDM[i];
+    smoothMinusDM = smoothMinusDM - smoothMinusDM / period + minusDM[i];
+    setDI(i);
+  }
+
+  const firstAdxIdx = 2 * period - 1;
+  if (firstAdxIdx < n) {
+    let sumDx = 0;
+    for (let i = period; i <= firstAdxIdx; i++) sumDx += dx[i];
+    let prevAdx = sumDx / period;
+    adxOut[firstAdxIdx] = prevAdx;
+    for (let i = firstAdxIdx + 1; i < n; i++) {
+      prevAdx = (prevAdx * (period - 1) + dx[i]) / period;
+      adxOut[i] = prevAdx;
+    }
+  }
+
+  return { adx: adxOut, plusDI, minusDI };
+}
+
+// Stochastic oscillator applied to RSI instead of price — more sensitive, more whipsaw-prone.
+function stochRsi(closes, rsiPeriod = 14, stochPeriod = 14, kSmooth = 3, dSmooth = 3) {
+  const n = closes.length;
+  const rsiSeries = rsi(closes, rsiPeriod);
+  // compact to a null-free series so the raw-%K window can slice by count, not index
+  const validRsi = rsiSeries.filter((v) => v != null);
+  const rawKCompact = new Array(validRsi.length).fill(null);
+  for (let i = stochPeriod - 1; i < validRsi.length; i++) {
+    const slice = validRsi.slice(i - stochPeriod + 1, i + 1);
+    const hi = Math.max(...slice);
+    const lo = Math.min(...slice);
+    rawKCompact[i] = hi === lo ? 50 : ((validRsi[i] - lo) / (hi - lo)) * 100;
+  }
+
+  // %K/%D smoothing must run over the compacted non-null values, same reasoning as
+  // stochastic() above — sma() fed a null-padded array poisons its running sum.
+  const kSmoothedCompact = sma(rawKCompact.filter((v) => v != null), kSmooth);
+  const kCompact = new Array(validRsi.length).fill(null);
+  let j = 0;
+  for (let i = 0; i < validRsi.length; i++) {
+    if (rawKCompact[i] != null) {
+      kCompact[i] = kSmoothedCompact[j] ?? null;
+      j++;
+    }
+  }
+  const dSmoothedCompact = sma(kCompact.filter((v) => v != null), dSmooth);
+  const dCompact = new Array(validRsi.length).fill(null);
+  let m = 0;
+  for (let i = 0; i < validRsi.length; i++) {
+    if (kCompact[i] != null) {
+      dCompact[i] = dSmoothedCompact[m] ?? null;
+      m++;
+    }
+  }
+
+  // expand both compacted series back to full, null-padded-at-head alignment with closes
+  const kOut = new Array(n).fill(null);
+  const dOut = new Array(n).fill(null);
+  let c = 0;
+  for (let i = 0; i < n; i++) {
+    if (rsiSeries[i] == null) continue;
+    kOut[i] = kCompact[c] ?? null;
+    dOut[i] = dCompact[c] ?? null;
+    c++;
+  }
+  return { k: kOut, d: dOut };
+}
+
 function last(arr) {
   for (let i = arr.length - 1; i >= 0; i--) {
     if (arr[i] != null) return arr[i];
@@ -157,12 +263,17 @@ export function computeIndicators(bars) {
   const sma50 = sma(closes, 50);
   const ema12 = ema(closes, 12);
   const ema26 = ema(closes, 26);
+  const ema9 = ema(closes, 9);
+  const ema21 = ema(closes, 21);
+  const ema50 = ema(closes, 50);
   const rsi14 = rsi(closes, 14);
   const { macdLine, signalLine, histogram } = macd(closes);
   const bb = bollingerBands(closes, 20, 2);
   const vwapSeries = vwap(bars);
   const atr14 = atr(bars, 14);
   const stoch = stochastic(bars, 14, 3);
+  const adxRes = adx(bars, 14);
+  const stochRsiRes = stochRsi(closes, 14, 14, 3, 3);
 
   const price = closes[closes.length - 1];
   const lastRsi = last(rsi14);
@@ -177,6 +288,9 @@ export function computeIndicators(bars) {
   const lastAtr = last(atr14);
   const lastK = last(stoch.k);
   const lastD = last(stoch.d);
+  const lastAdx = last(adxRes.adx);
+  const lastPlusDI = last(adxRes.plusDI);
+  const lastMinusDI = last(adxRes.minusDI);
 
   // Composite scoring: each signal votes -1..+1, averaged into one -100..+100 score.
   const votes = [];
@@ -190,6 +304,13 @@ export function computeIndicators(bars) {
   }
   if (lastK != null && lastD != null) votes.push(lastK < 20 ? 1 : lastK > 80 ? -1 : lastK > lastD ? 0.3 : -0.3);
   if (lastVwap != null) votes.push(price > lastVwap ? 0.5 : -0.5);
+  // ADX itself is non-directional (trend strength only); the DI cross supplies direction,
+  // gated by ADX>=25 so a choppy/sideways market doesn't cast a vote at all. Weighted below
+  // the +/-1 votes since DI crosses are noisier. StochRSI deliberately does NOT vote here —
+  // it's a derivative of RSI, which already votes, and would triple-count the same momentum.
+  if (lastAdx != null && lastPlusDI != null && lastMinusDI != null) {
+    votes.push(lastAdx >= 25 ? (lastPlusDI > lastMinusDI ? 0.75 : -0.75) : 0);
+  }
 
   const score = votes.length ? (votes.reduce((a, b) => a + b, 0) / votes.length) * 100 : 0;
   const label = score >= 40 ? "strong_buy" : score >= 12 ? "buy" : score <= -40 ? "strong_sell" : score <= -12 ? "sell" : "neutral";
@@ -200,6 +321,9 @@ export function computeIndicators(bars) {
       sma50,
       ema12,
       ema26,
+      ema9,
+      ema21,
+      ema50,
       rsi14,
       macdLine,
       signalLine,
@@ -211,6 +335,11 @@ export function computeIndicators(bars) {
       atr14,
       stochK: stoch.k,
       stochD: stoch.d,
+      adx14: adxRes.adx,
+      plusDI: adxRes.plusDI,
+      minusDI: adxRes.minusDI,
+      stochRsiK: stochRsiRes.k,
+      stochRsiD: stochRsiRes.d,
     },
     latest: {
       price,
@@ -226,6 +355,14 @@ export function computeIndicators(bars) {
       atr14: lastAtr,
       stochK: lastK,
       stochD: lastD,
+      ema9: last(ema9),
+      ema21: last(ema21),
+      ema50: last(ema50),
+      adx14: lastAdx,
+      plusDI: lastPlusDI,
+      minusDI: lastMinusDI,
+      stochRsiK: last(stochRsiRes.k),
+      stochRsiD: last(stochRsiRes.d),
     },
     composite: { score: Number(score.toFixed(1)), label },
   };

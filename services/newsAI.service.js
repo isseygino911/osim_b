@@ -11,14 +11,17 @@ const DEFAULT_MODEL = "gemini-2.5-flash";
 const CACHE_CAP = 500;
 
 let client = null;
-const aiCache = new Map(); // key: item.link || item.title → analysis result (FIFO-capped)
+const aiCache = new Map(); // key: `${symbol}:${item.link || item.title}` → analysis result (FIFO-capped)
 
 export function isEnabled() {
   return Boolean(process.env.GEMINI_API_KEY);
 }
 
-function keyOf(item) {
-  return item.link || item.title;
+// The symbol is part of the key — the same headline can be bullish for one
+// ticker and irrelevant to another, so verdicts must never leak across symbols.
+function keyOf(item, symbol) {
+  const id = item.link || item.title;
+  return id ? `${symbol}:${id}` : null;
 }
 
 function getClient() {
@@ -43,15 +46,16 @@ const RESPONSE_SCHEMA = {
   },
 };
 
-// Batch-analyzes headlines: cached results return instantly, unseen ones go to
-// Gemini in ONE structured-output call. Returns a Map keyed like the cache.
-export async function analyzeItems(items) {
+// Batch-analyzes headlines for one symbol: cached results return instantly,
+// unseen ones go to Gemini in ONE structured-output call. Returns a Map keyed
+// like the cache (`${symbol}:${link || title}`).
+export async function analyzeItems(items, { symbol = "QQQ", name = null } = {}) {
   const out = new Map();
   if (!isEnabled() || !items?.length) return out;
 
   const uncached = [];
   for (const item of items) {
-    const key = keyOf(item);
+    const key = keyOf(item, symbol);
     if (!key) continue;
     const hit = aiCache.get(key);
     if (hit) out.set(key, hit);
@@ -59,13 +63,14 @@ export async function analyzeItems(items) {
   }
   if (!uncached.length) return out;
 
+  const subject = symbol === "QQQ" ? "QQQ (Nasdaq-100 ETF)" : name ? `${symbol} (${name})` : symbol;
   try {
     const res = await getClient().models.generateContent({
       model: process.env.GEMINI_MODEL || DEFAULT_MODEL,
       contents:
-        "You score financial headlines for a QQQ (Nasdaq-100 ETF) short-dated options trader.\n" +
-        "For EACH numbered item return: relevant (could it move QQQ within days?), relevanceScore 0-100,\n" +
-        "direction of likely QQQ price impact (bullish/bearish/neutral), magnitude 1-3, and a reason\n" +
+        `You score financial headlines for a ${subject} short-dated options trader.\n` +
+        `For EACH numbered item return: relevant (could it move ${symbol} within days?), relevanceScore 0-100,\n` +
+        `direction of likely ${symbol} price impact (bullish/bearish/neutral), magnitude 1-3, and a reason\n` +
         "under 120 characters.\nItems:\n" +
         uncached.map((it, i) => `${i}. ${it.title} — ${(it.summary || "").slice(0, 200)}`).join("\n"),
       config: {
@@ -86,7 +91,7 @@ export async function analyzeItems(items) {
         magnitude: Math.max(1, Math.min(3, Math.round(row.magnitude))),
         reason: String(row.reason ?? "").slice(0, 120),
       };
-      const key = keyOf(item);
+      const key = keyOf(item, symbol);
       aiCache.set(key, result);
       out.set(key, result);
     }

@@ -6,7 +6,9 @@ import { bsGreeks, impliedVol, yearFraction } from "./blackScholes.service.js";
 // whatever can be derived, and nothing downstream may assume a greek is present.
 
 export const DEFAULT_RISK_FREE_RATE = 0.04;
-export const DEFAULT_DIVIDEND_YIELD = 0.006; // QQQ trailing 12m yield, used as continuous q
+// QQQ trailing 12m yield, used as continuous q. This is only the fallback —
+// per-symbol accuracy comes from Claude supplying dividendYield in the snapshot.
+export const DEFAULT_DIVIDEND_YIELD = 0.006;
 const IV_DIVERGENCE_FLAG = 0.05; // Robinhood IV vs our BS-implied IV — beyond this the quote data is suspect
 
 const GREEK_KEYS = ["delta", "gamma", "theta", "vega", "rho"];
@@ -84,6 +86,9 @@ export function enrichSnapshot(snapshot) {
 // score: 25-delta put/call IV skew (fear gauge) blended with put/call open-interest
 // ratio when available. Positive bias = bullish positioning. Runs on an ENRICHED
 // chain — v1 snapshots work via computed IV/delta; OI is genuinely optional.
+// Baselines below are tuned for QQQ/index ETFs; single names typically run flatter
+// skew and lower put/call OI. They only feed the informational newsVsOptions bias,
+// never combinedScore/action, so per-symbol miscalibration is display-only.
 export const BASELINE_PUT_SKEW = 0.03; // QQQ 25Δ put-call IV skew is normally ~+3 vol pts
 const SKEW_SPAN = 0.05; // 5 vol pts beyond/below baseline saturates the score
 const OI_BASELINE_RATIO = 1.2; // normal put/call OI for an index ETF (hedging flow)

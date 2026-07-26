@@ -23,7 +23,10 @@ File naming: `<entity>.routes.js`, `<entity>.controller.js`, `<entity>.service.j
 
 ## Behavior notes
 
-- `GET /api/snapshot` is a raw-text passthrough of `data/snapshot.json` — do not parse+re-stringify.
+- Data files are per-symbol: `data/snapshots/<SYM>.json`, `data/autopilot/<SYM>.json`, with
+  the active symbol in `data/settings.json`. Symbols are validated by `symbol.service.js`
+  in controllers and re-asserted in models before ever becoming a path segment.
+- `GET /api/snapshot` is a raw-text passthrough of the symbol's snapshot file — do not parse+re-stringify.
 - The snapshot reader is dependency-injected into the autopilot service (passed in from callers), not imported by it.
 - `strategy.service.js` and `indicators.service.js` are pure/I-O-free — keep them that way.
 - Tests use built-in `node:test` (`npm test` → `node --test`, files in `test/*.test.js`). Pure services (blackScholes, greeks, strategy) get unit tests; controllers/routes are verified by smoke-testing the endpoints on port 8787.

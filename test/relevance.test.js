@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { RELEVANCE_THRESHOLD, scoreDirection, scoreRelevance } from "../services/relevance.service.js";
+import { compileProfile, RELEVANCE_THRESHOLD, scoreDirection, scoreRelevance } from "../services/relevance.service.js";
 
 test("word boundaries: no substring false positives", () => {
   assert.equal(scoreDirection("Circuit breaker triggered on exchange").score, 0, "'cut' must not match 'circuit'");
@@ -59,6 +59,27 @@ test("ambiguous tickers match uppercase only", () => {
   assert.ok(scoreRelevance("COST rallies after earnings beat").score >= RELEVANCE_THRESHOLD);
   assert.equal(scoreRelevance("What ai tools do students use?").score, 0, "'ai' lowercase is not AI");
   assert.ok(scoreRelevance("AI spending boom lifts chipmakers").score >= RELEVANCE_THRESHOLD);
+});
+
+test("compileProfile: per-symbol tier-1 from ticker + company name", () => {
+  const aapl = compileProfile("AAPL", "Apple Inc");
+  assert.ok(scoreRelevance("Apple beats earnings estimates", aapl).score >= RELEVANCE_THRESHOLD);
+  assert.ok(scoreRelevance("AAPL slides after downgrade", aapl).score >= RELEVANCE_THRESHOLD);
+  const other = scoreRelevance("Costco raises guidance for holiday quarter", aapl);
+  assert.ok(!other.matched.some((m) => m.weight === 45), "unrelated single name must not hit AAPL tier-1");
+});
+
+test("compileProfile: ticker stays case-sensitive, macro tiers shared", () => {
+  const cost = compileProfile("COST", "Costco Wholesale Corporation");
+  assert.equal(scoreRelevance("The cost of living keeps rising", cost).matched.some((m) => m.weight === 45), false);
+  assert.ok(scoreRelevance("COST rallies after earnings beat", cost).score >= RELEVANCE_THRESHOLD);
+  assert.ok(scoreRelevance("Costco rallies after earnings beat", cost).score >= RELEVANCE_THRESHOLD);
+  assert.ok(scoreRelevance("Fed signals rate cut", cost).score >= RELEVANCE_THRESHOLD, "macro tier applies to every symbol");
+});
+
+test("compileProfile: QQQ returns the hand-tuned default profile", () => {
+  const qqq = compileProfile("QQQ", "Invesco QQQ Trust");
+  assert.equal(scoreRelevance("Nvidia unveils new chip", qqq).score, scoreRelevance("Nvidia unveils new chip").score);
 });
 
 test("direction score is clamped to [-5, 5]", () => {
