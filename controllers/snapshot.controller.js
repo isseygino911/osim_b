@@ -20,7 +20,13 @@ export async function getSnapshot(_req, res) {
 }
 
 // Lets Claude (or any trusted local process) push a freshly-fetched snapshot.
+// Guarded by SNAPSHOT_TOKEN when set, since this now runs on a schedule against
+// an Express app that listens on all interfaces with open CORS.
 export async function postSnapshot(req, res) {
+  const token = process.env.SNAPSHOT_TOKEN;
+  if (token && req.get("X-Snapshot-Token") !== token) {
+    return res.status(401).json({ error: "Invalid or missing snapshot token" });
+  }
   const body = req.body;
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return res.status(400).json({ error: "Body must be a JSON object" });
