@@ -1,6 +1,7 @@
-import { readSnapshot, readSnapshotRaw, writeSnapshot } from "../models/snapshot.model.js";
+import { clearRefreshState } from "../models/refresh.model.js";
+import { deleteSnapshot, readSnapshot, readSnapshotRaw, writeSnapshot } from "../models/snapshot.model.js";
 import { assessChain, DEFAULT_RISK_FREE_RATE, enrichSnapshot } from "../services/greeks.service.js";
-import { computeIndicators } from "../services/indicators.service.js";
+import { candlesFor, computeIndicators } from "../services/indicators.service.js";
 import { getIvStats, recordIvSample } from "../services/ivRank.service.js";
 import { getNews } from "../services/news.service.js";
 import { computeSignal, previewPicks, RISK } from "../services/strategy.service.js";
@@ -49,11 +50,29 @@ export async function postSnapshot(req, res) {
     return res.status(400).json({ error: `Body symbol ${bodySymbol} does not match query symbol ${querySymbol}` });
   }
   const symbol = bodySymbol ?? querySymbol ?? (await resolveSymbol(undefined));
+  if (!symbol) {
+    return res.status(400).json({ error: "No symbol in body/query and no active symbol set — include a symbol." });
+  }
   try {
     const stored = { ...body, symbol, fetchedAt: new Date().toISOString() };
     await writeSnapshot(symbol, stored);
     // Best-effort IV-history append for IV Rank/Percentile — never fails the snapshot POST.
     recordIvSample(symbol, stored).catch((e) => console.error("[iv]", e.message));
+    res.json({ ok: true, symbol });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+}
+
+// Lets the client wipe a symbol's fetched data (the "Reset snapshot" button) so the
+// next refresh starts clean instead of layering onto stale strikes/candles. Also
+// clears any stuck refresh-status/request so no dangling banner survives the reset.
+export async function deleteSnapshotEndpoint(req, res) {
+  const symbol = await resolveSymbol(req.query.symbol);
+  if (!symbol) return res.status(400).json({ error: "Invalid symbol" });
+  try {
+    await deleteSnapshot(symbol);
+    await clearRefreshState(symbol);
     res.json({ ok: true, symbol });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -89,13 +108,19 @@ export async function getChain(req, res) {
   }
 }
 
+const CANDLE_INTERVALS = ["15m", "30m", "1h", "1d"];
+
 // Technical indicators computed from whatever snapshot is currently on disk.
 export async function getIndicators(req, res) {
   const symbol = await resolveSymbol(req.query.symbol);
   if (!symbol) return res.status(400).json({ error: "Invalid symbol" });
+  const interval = req.query.interval !== undefined ? req.query.interval : "1d";
+  if (!CANDLE_INTERVALS.includes(interval)) {
+    return res.status(400).json({ error: `Invalid interval: ${interval}` });
+  }
   try {
     const snap = await readSnapshot(symbol);
-    const ind = computeIndicators(snap.candles || []);
+    const ind = computeIndicators(candlesFor(snap, interval));
     const iv = await getIvStats(symbol).catch(() => null);
     res.json({ ...ind, iv });
   } catch (e) {

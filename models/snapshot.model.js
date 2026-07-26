@@ -34,6 +34,16 @@ export async function writeSnapshot(symbol, snapshot) {
   await fs.rename(tmpPath, filePath);
 }
 
+// Deletes the stored snapshot so the next refresh starts from a clean slate. Not an
+// error if there's nothing to delete — resetting an already-empty symbol is a no-op.
+export async function deleteSnapshot(symbol) {
+  try {
+    await fs.unlink(snapshotPath(symbol));
+  } catch (e) {
+    if (e.code !== "ENOENT") throw e;
+  }
+}
+
 export async function listSnapshotSymbols() {
   try {
     const files = await fs.readdir(SNAPSHOT_DIR);

@@ -10,7 +10,7 @@ export async function readSettings() {
     const raw = await fs.readFile(SETTINGS_PATH, "utf-8");
     return JSON.parse(raw);
   } catch {
-    return { activeSymbol: "QQQ" };
+    return { activeSymbol: null };
   }
 }
 

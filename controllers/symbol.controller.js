@@ -1,13 +1,14 @@
 import { readSettings, writeSettings } from "../models/settings.model.js";
 import { listSnapshotSymbols, readSnapshot } from "../models/snapshot.model.js";
-import { DEFAULT_SYMBOL, normalizeSymbol } from "../services/symbol.service.js";
+import { normalizeSymbol } from "../services/symbol.service.js";
 
 // The active symbol is what Claude refreshes when asked without naming one,
-// and what every data endpoint falls back to when no ?symbol= is passed.
+// and what every data endpoint falls back to when no ?symbol= is passed. null
+// until the user picks one via PUT /api/symbol (search + "Go" in the client).
 export async function getSymbol(_req, res) {
   try {
     const settings = await readSettings();
-    res.json({ activeSymbol: normalizeSymbol(settings.activeSymbol) ?? DEFAULT_SYMBOL });
+    res.json({ activeSymbol: normalizeSymbol(settings.activeSymbol) });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -52,7 +53,7 @@ export async function listSymbols(_req, res) {
         }
       })
     );
-    res.json({ symbols: entries, activeSymbol: normalizeSymbol(settings.activeSymbol) ?? DEFAULT_SYMBOL });
+    res.json({ symbols: entries, activeSymbol: normalizeSymbol(settings.activeSymbol) });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

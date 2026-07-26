@@ -252,6 +252,14 @@ function last(arr) {
   return null;
 }
 
+// Resolves a snapshot's candles for a given interval. Snapshots may still hold a legacy
+// flat array (pre-multi-interval) — that array is treated as "1d" data.
+export function candlesFor(snapshot, interval = "1d") {
+  const c = snapshot?.candles;
+  if (Array.isArray(c)) return interval === "1d" ? c : [];
+  return c?.[interval] || [];
+}
+
 // Computes the full indicator suite and a simple composite signal from OHLCV bars.
 export function computeIndicators(bars) {
   if (!Array.isArray(bars) || bars.length < 2) {

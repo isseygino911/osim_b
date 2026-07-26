@@ -1,6 +1,6 @@
 import { yearFraction } from "./blackScholes.service.js";
 import { assessChain, computeOptionsBias } from "./greeks.service.js";
-import { computeIndicators } from "./indicators.service.js";
+import { candlesFor, computeIndicators } from "./indicators.service.js";
 
 // Risk controls — deliberately aggressive since the stated goal is 10%/week,
 // which is only reachable with real position sizing, but still bounded so a
@@ -159,7 +159,7 @@ export function assessDivergence(newsScore, optionsBias) {
 
 // Combines technical composite score with news sentiment into one -100..100 signal.
 export function computeSignal(snapshot, news) {
-  const indicators = computeIndicators(snapshot.candles || []);
+  const indicators = computeIndicators(candlesFor(snapshot, "1d"));
   if (indicators.insufficientData) {
     return { action: "hold", reason: "insufficient candle data", indicators, newsScore: 0, combinedScore: 0 };
   }

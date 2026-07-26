@@ -46,3 +46,26 @@ export async function writeRefreshStatus(symbol, status) {
   await fs.writeFile(tmpPath, JSON.stringify(status, null, 2));
   await fs.rename(tmpPath, filePath);
 }
+
+// Every symbol with a refresh-status file, regardless of which one is currently
+// active in the client — powers a global "what's running" list across symbols.
+export async function listRefreshStatuses() {
+  let files;
+  try {
+    files = await fs.readdir(STATUS_DIR);
+  } catch {
+    return [];
+  }
+  const symbols = files.filter((f) => f.endsWith(".json")).map((f) => f.slice(0, -5)).filter((s) => SYMBOL_RE.test(s));
+  const statuses = await Promise.all(symbols.map((s) => readRefreshStatus(s)));
+  return statuses.filter(Boolean);
+}
+
+// Clears any stuck/stale status (and a still-pending trigger file, if the watcher
+// never claimed it) so a snapshot reset doesn't leave a dangling banner behind.
+export async function clearRefreshState(symbol) {
+  await Promise.all([
+    fs.unlink(statusPath(symbol)).catch((e) => { if (e.code !== "ENOENT") throw e; }),
+    fs.unlink(requestPath(symbol)).catch((e) => { if (e.code !== "ENOENT") throw e; }),
+  ]);
+}
