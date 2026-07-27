@@ -1,16 +1,14 @@
 import { clearRefreshState } from "../models/refresh.model.js";
 import { deleteSnapshot, readSnapshot, readSnapshotRaw, writeSnapshot } from "../models/snapshot.model.js";
-import { assessChain, DEFAULT_RISK_FREE_RATE, enrichSnapshot } from "../services/greeks.service.js";
+import { assessChain, computeGammaExposure, computeVolSurface, DEFAULT_RISK_FREE_RATE, enrichSnapshot } from "../services/greeks.service.js";
 import { candlesFor, computeIndicators } from "../services/indicators.service.js";
 import { getIvStats, recordIvSample } from "../services/ivRank.service.js";
 import { getNews } from "../services/news.service.js";
 import { computeSignal, previewPicks, RISK } from "../services/strategy.service.js";
 import { normalizeSymbol, resolveSymbol } from "../services/symbol.service.js";
 
-// Serves whatever Robinhood data was last written for the symbol (explicit
-// ?symbol= or the active one). That file is produced out-of-band by Claude
-// (which holds the authenticated Robinhood MCP connection) — this server never
-// talks to Robinhood or Anthropic itself.
+// Serves whatever snapshot was last written for the symbol (explicit
+// ?symbol= or the active one) — fetched directly from Tradier by this server itself.
 export async function getSnapshot(req, res) {
   const symbol = await resolveSymbol(req.query.symbol);
   if (!symbol) return res.status(400).json({ error: "Invalid symbol" });
@@ -19,7 +17,7 @@ export async function getSnapshot(req, res) {
     res.type("application/json").send(raw);
   } catch (e) {
     if (e.code === "ENOENT") {
-      return res.status(404).json({ error: `No snapshot for ${symbol} yet — ask Claude to refresh ${symbol} data.` });
+      return res.status(404).json({ error: `No snapshot for ${symbol} yet — POST /api/refresh?symbol=${symbol} to fetch one.` });
     }
     res.status(500).json({ error: e.message });
   }
@@ -93,7 +91,7 @@ export async function getChain(req, res) {
     const enriched = enrichSnapshot(await readSnapshot(symbol));
     const chain = enriched.chains?.[expiration];
     if (!chain) {
-      return res.status(404).json({ error: `No chain data for ${symbol} ${expiration} yet — ask Claude to refresh ${symbol} including this expiration.` });
+      return res.status(404).json({ error: `No chain data for ${symbol} ${expiration} yet — refresh ${symbol} to fetch it.` });
     }
     res.json({
       symbol,
@@ -120,7 +118,7 @@ export async function getIndicators(req, res) {
   }
   try {
     const snap = await readSnapshot(symbol);
-    const ind = computeIndicators(candlesFor(snap, interval));
+    const ind = computeIndicators(candlesFor(snap, interval), interval);
     const iv = await getIvStats(symbol).catch(() => null);
     res.json({ ...ind, iv });
   } catch (e) {
@@ -145,7 +143,7 @@ export async function getSignal(req, res) {
 }
 
 // Greek-enriched chains plus a per-expiration quality summary. Enrichment is derived
-// per request — the on-disk snapshot keeps only what Robinhood actually returned.
+// per request — the on-disk snapshot keeps only what Tradier actually returned.
 export async function getGreeks(req, res) {
   const symbol = await resolveSymbol(req.query.symbol);
   if (!symbol) return res.status(400).json({ error: "Invalid symbol" });
@@ -156,6 +154,7 @@ export async function getGreeks(req, res) {
     for (const [expiration, chain] of Object.entries(enriched.chains ?? {})) {
       summary[expiration] = assessChain(chain, spot, { minOpenInterest: RISK.minOpenInterest });
     }
+    const preview = previewPicks(enriched);
     res.json({
       symbol,
       schemaVersion: enriched.schemaVersion ?? 1,
@@ -163,7 +162,9 @@ export async function getGreeks(req, res) {
       underlying: enriched.underlying ?? null,
       chains: enriched.chains ?? {},
       summary,
-      preview: previewPicks(enriched),
+      preview,
+      volSurface: computeVolSurface(enriched, preview?.expiration),
+      gammaExposure: computeGammaExposure(enriched),
       fetchedAt: enriched.fetchedAt ?? null,
     });
   } catch (e) {

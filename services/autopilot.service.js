@@ -155,7 +155,7 @@ async function runOnce(symbol, readSnapshot) {
 
   let snapshot;
   try {
-    // enrich with greeks (computed where Robinhood's are absent) so the strategy
+    // enrich with greeks (computed where the provider's are absent) so the strategy
     // can pick strikes by delta and dampen the signal on options conditions
     snapshot = enrichSnapshot(await readSnapshot(symbol));
   } catch (e) {

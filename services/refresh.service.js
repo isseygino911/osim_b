@@ -1,17 +1,45 @@
-import { clearRefreshState, listRefreshStatuses, readRefreshStatus, writeRefreshRequest, writeRefreshStatus } from "../models/refresh.model.js";
+import { clearRefreshState, listRefreshStatuses, readRefreshStatus, writeRefreshStatus } from "../models/refresh.model.js";
+import { listSnapshotSymbols, writeSnapshot } from "../models/snapshot.model.js";
+import { isTradierConfigured, fetchSnapshot as fetchTradierSnapshot } from "./tradier.service.js";
 
-export const TOTAL_REFRESH_STEPS = 6;
 const COOLDOWN_MS = 15_000; // after a completed/errored run, block re-requests for this long
-const MAX_LOG_ENTRIES = 300; // generous cap; a real run posts on the order of tens of entries
+const AUTO_REFRESH_INTERVAL_MS = 3 * 60 * 1000; // Tradier's real-time-for-account-holders data supports a
+// tight loop — 3min keeps every symbol within "a few minutes delay, not overnight" without
+// leaning on the rate limit (120 req/min prod; a full refresh is well under that per symbol).
+let autoRefreshTimer = null;
 
-// Drives the launchd-triggered "Go" refresh: writes the trigger file the watcher
-// listens for, then seeds a "pending" status the client polls via GET /api/refresh/status.
-// Refuses to re-trigger while a run is in flight or still inside its cooldown window,
-// since each request costs a real headless Claude + Robinhood round-trip.
+// Runs the direct Tradier fetch in-process and writes the resulting snapshot straight
+// to disk. Fire-and-forget from requestRefresh's point of view — the client polls
+// GET /api/refresh/status for the terminal done/error state.
+async function runTradierRefresh(symbol) {
+  try {
+    const snapshot = await fetchTradierSnapshot(symbol);
+    await writeSnapshot(symbol, { ...snapshot, fetchedAt: new Date().toISOString() });
+    await writeRefreshStatus(symbol, {
+      symbol,
+      status: "done",
+      message: `Snapshot updated: ${symbol} $${snapshot.underlying?.price}`,
+      updatedAt: new Date().toISOString(),
+    });
+  } catch (e) {
+    await writeRefreshStatus(symbol, {
+      symbol,
+      status: "error",
+      message: e.message,
+      updatedAt: new Date().toISOString(),
+    });
+  }
+}
+
+// Drives the "Go" refresh: fetches directly from Tradier in-process (a few seconds).
+// Refuses to re-trigger while a run is in flight or still inside its cooldown window.
 export async function requestRefresh(symbol) {
+  if (!isTradierConfigured()) {
+    throw new Error("TRADIER_API_KEY is not set — cannot refresh. Add it to server/.env and restart the server.");
+  }
   const existing = await readRefreshStatus(symbol);
   if (existing) {
-    if (existing.status === "pending" || existing.status === "running") {
+    if (existing.status === "running") {
       return { ok: false, conflict: true, status: existing };
     }
     const elapsed = Date.now() - new Date(existing.updatedAt).getTime();
@@ -20,93 +48,44 @@ export async function requestRefresh(symbol) {
     }
   }
   const now = new Date().toISOString();
-  const initialMessage = "Refresh requested — waiting for the local watcher to pick it up…";
-  const status = {
-    symbol,
-    status: "pending",
-    step: 0,
-    totalSteps: TOTAL_REFRESH_STEPS,
-    message: initialMessage,
-    error: null,
-    log: [{ step: 0, message: initialMessage, ts: now }],
-    requestedAt: now,
-    updatedAt: now,
-  };
+  const status = { symbol, status: "running", message: "Fetching from Tradier…", updatedAt: now };
   await writeRefreshStatus(symbol, status);
-  await writeRefreshRequest(symbol, now);
+  runTradierRefresh(symbol); // intentionally not awaited — client polls status
   return { ok: true, status };
 }
 
-// Called by the headless refresh-snapshot run (POST /api/refresh/progress) as it works
-// through the fetch pipeline. Every call with a message is a discrete, real sub-step
-// (one Robinhood call, one batch, one expiration) — appended to `log` so the client's
-// loading screen can render the full step-by-step trail in real time, not just the
-// latest message. `step`/`totalSteps` still drive the progress bar's percentage.
-export async function recordProgress(symbol, { status, step, totalSteps, message, error }) {
-  const existing = await readRefreshStatus(symbol);
-  const prevLog = Array.isArray(existing?.log) ? existing.log : [];
-  const now = new Date().toISOString();
-  const nextStep = step ?? existing?.step ?? 0;
-  const appended =
-    message && message !== existing?.message
-      ? [...prevLog, { step: nextStep, message, ts: now }].slice(-MAX_LOG_ENTRIES)
-      : prevLog;
-  const next = {
-    symbol,
-    status: status ?? existing?.status ?? "running",
-    step: nextStep,
-    totalSteps: totalSteps ?? existing?.totalSteps ?? TOTAL_REFRESH_STEPS,
-    message: message ?? existing?.message ?? "",
-    error: error ?? null,
-    log: appended,
-    requestedAt: existing?.requestedAt ?? now,
-    updatedAt: now,
-  };
-  await writeRefreshStatus(symbol, next);
-  return next;
-}
-
-// Cancels a queued-but-not-yet-started refresh (deletes the trigger file so the watcher
-// never picks it up). Can't stop a "running" job — that's already a separate headless
-// process the server has no handle on — so this only succeeds while still "pending".
-export async function cancelRefresh(symbol) {
-  const existing = await readRefreshStatus(symbol);
-  if (!existing || existing.status !== "pending") {
-    return { ok: false, status: existing ?? null };
-  }
-  await clearRefreshState(symbol);
-  return { ok: true };
-}
-
-// Every symbol with an active/recent refresh, across all symbols — not just whichever
-// one is currently selected in the client. Powers the "what's running" list.
+// Every symbol currently running a refresh — powers the client's "what's running" list.
 export async function listActiveRefreshes() {
   const all = await listRefreshStatuses();
-  return all.filter((s) => s.status === "pending" || s.status === "running");
+  return all.filter((s) => s.status === "running");
 }
 
-// Unconditionally clears a symbol's refresh tracking (the list's "X" button) — unlike
-// cancelRefresh above, this works regardless of status. For a "running" job this only
-// removes the status file; it can't kill the underlying headless process (no PID is
-// tracked anywhere), so that process — if still alive — keeps running invisibly.
+// Unconditionally clears a symbol's refresh tracking (e.g. the snapshot-reset button).
 export async function clearRefresh(symbol) {
   await clearRefreshState(symbol);
   return { ok: true };
 }
 
+// Keeps every symbol that already has a snapshot fresh on a fixed interval, without
+// waiting for anyone to click "Go".
+async function autoRefreshTick() {
+  for (const symbol of await listSnapshotSymbols()) {
+    const existing = await readRefreshStatus(symbol);
+    if (existing?.status === "running") continue;
+    runTradierRefresh(symbol).catch((e) => console.error(`[refresh] auto-refresh error (${symbol}):`, e.message));
+  }
+}
+
+export function initAutoRefresh() {
+  if (!isTradierConfigured()) return;
+  if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+  autoRefreshTimer = setInterval(() => {
+    autoRefreshTick().catch((e) => console.error("[refresh] auto-refresh loop error:", e.message));
+  }, AUTO_REFRESH_INTERVAL_MS);
+  console.log(`[refresh] Tradier auto-refresh loop started (every ${AUTO_REFRESH_INTERVAL_MS / 1000}s).`);
+}
+
 export async function getStatus(symbol) {
   const existing = await readRefreshStatus(symbol);
-  return (
-    existing ?? {
-      symbol,
-      status: "idle",
-      step: 0,
-      totalSteps: TOTAL_REFRESH_STEPS,
-      message: "",
-      error: null,
-      log: [],
-      requestedAt: null,
-      updatedAt: null,
-    }
-  );
+  return existing ?? { symbol, status: "idle", message: "", updatedAt: null };
 }

@@ -84,11 +84,23 @@ function bollingerBands(closes, period = 20, stdDevMult = 2) {
   return { upper, mid, lower };
 }
 
+// Session VWAP: resets its cumulative sum/volume at each new calendar day (UTC date of
+// bar.t) rather than accumulating over the whole array — real VWAP is anchored to the
+// start of the trading session, not an all-time average. Assumes intraday bars; the
+// caller skips this entirely for the "1d" interval, where every bar is its own session
+// and a reset VWAP would just equal that bar's own typical price.
 function vwap(bars) {
   const out = new Array(bars.length).fill(null);
   let cumPV = 0;
   let cumVol = 0;
+  let sessionDay = null;
   for (let i = 0; i < bars.length; i++) {
+    const day = bars[i].t.slice(0, 10);
+    if (day !== sessionDay) {
+      sessionDay = day;
+      cumPV = 0;
+      cumVol = 0;
+    }
     const typical = (bars[i].high + bars[i].low + bars[i].close) / 3;
     cumPV += typical * bars[i].volume;
     cumVol += bars[i].volume;
@@ -261,7 +273,10 @@ export function candlesFor(snapshot, interval = "1d") {
 }
 
 // Computes the full indicator suite and a simple composite signal from OHLCV bars.
-export function computeIndicators(bars) {
+// VWAP is a session-based (intraday) concept — on "1d" bars each candle is already its
+// own session, so a session-reset VWAP would be degenerate (equal to that bar's own
+// typical price); it's skipped entirely there and returned as an all-null series.
+export function computeIndicators(bars, interval = "1d") {
   if (!Array.isArray(bars) || bars.length < 2) {
     return { insufficientData: true };
   }
@@ -277,7 +292,7 @@ export function computeIndicators(bars) {
   const rsi14 = rsi(closes, 14);
   const { macdLine, signalLine, histogram } = macd(closes);
   const bb = bollingerBands(closes, 20, 2);
-  const vwapSeries = vwap(bars);
+  const vwapSeries = interval === "1d" ? new Array(bars.length).fill(null) : vwap(bars);
   const atr14 = atr(bars, 14);
   const stoch = stochastic(bars, 14, 3);
   const adxRes = adx(bars, 14);

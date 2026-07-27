@@ -7,14 +7,19 @@ import { GoogleGenAI, Type } from "@google/genai";
 //
 // "gemini-flash-latest" is Google's rolling alias for the newest flash model;
 // pin a known-good default and let GEMINI_MODEL override.
-const DEFAULT_MODEL = "gemini-2.5-flash";
+const DEFAULT_MODEL = "gemini-2.5-flash-lite";
 const CACHE_CAP = 500;
 
 let client = null;
 const aiCache = new Map(); // key: `${symbol}:${item.link || item.title}` → analysis result (FIFO-capped)
+const usage = { promptTokens: 0, outputTokens: 0, totalTokens: 0, calls: 0 }; // cumulative since process start
 
 export function isEnabled() {
   return Boolean(process.env.GEMINI_API_KEY);
+}
+
+export function getUsage() {
+  return { ...usage, model: process.env.GEMINI_MODEL || DEFAULT_MODEL };
 }
 
 // The symbol is part of the key — the same headline can be bullish for one
@@ -79,6 +84,14 @@ export async function analyzeItems(items, { symbol = "QQQ", name = null } = {}) 
         responseSchema: RESPONSE_SCHEMA,
       },
     });
+
+    const meta = res.usageMetadata;
+    if (meta) {
+      usage.promptTokens += meta.promptTokenCount || 0;
+      usage.outputTokens += (meta.candidatesTokenCount || 0) + (meta.thoughtsTokenCount || 0);
+      usage.totalTokens += meta.totalTokenCount || 0;
+      usage.calls += 1;
+    }
 
     const rows = JSON.parse(res.text);
     for (const row of Array.isArray(rows) ? rows : []) {

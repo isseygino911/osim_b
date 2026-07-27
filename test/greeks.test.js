@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { BASELINE_PUT_SKEW, computeOptionsBias } from "../services/greeks.service.js";
+import {
+  BASELINE_PUT_SKEW,
+  computeGammaExposure,
+  computeOptionsBias,
+  computeRealizedVol,
+  computeVolSurface,
+} from "../services/greeks.service.js";
 
 // Synthetic enriched chain: call/put deltas bracketing 25Δ, controllable IVs and OI.
 function chain({ putSkew = BASELINE_PUT_SKEW, oi = null } = {}) {
@@ -66,4 +72,75 @@ test("narrow chain that cannot bracket 25-delta yields null skew", () => {
   const { bias, factors } = computeOptionsBias(atmOnly, 100);
   assert.equal(bias, 0);
   assert.equal(factors, null);
+});
+
+// 22 gently up-trending daily closes — enough for a 20-session realized-vol window.
+function dailyCandles() {
+  const out = [];
+  let close = 100;
+  for (let i = 0; i < 22; i++) {
+    close *= 1 + (i % 4 === 0 ? -0.01 : 0.012);
+    out.push({ t: new Date(Date.UTC(2026, 5, 1 + i)).toISOString(), open: close, high: close, low: close, close, volume: 1000 });
+  }
+  return out;
+}
+
+function surfaceSnapshot({ putSkew = BASELINE_PUT_SKEW } = {}) {
+  const nearExp = "2026-08-01";
+  const farExp = "2026-08-15";
+  return {
+    underlying: { price: 100 },
+    expirations: [nearExp, farExp],
+    chains: { [nearExp]: chain({ putSkew }), [farExp]: chain({ putSkew }) },
+    candles: { "1d": dailyCandles() },
+  };
+}
+
+test("computeRealizedVol needs at least lookback+1 closes, else null", () => {
+  assert.equal(computeRealizedVol({ candles: { "1d": dailyCandles().slice(0, 10) } }), null);
+  const vol = computeRealizedVol({ candles: { "1d": dailyCandles() } });
+  assert.ok(Number.isFinite(vol) && vol > 0, `expected a positive annualized vol, got ${vol}`);
+});
+
+test("computeVolSurface returns skew/term/vol for a two-expiration chain", () => {
+  const snap = surfaceSnapshot();
+  const { skew, term, vol } = computeVolSurface(snap, "2026-08-01");
+  assert.ok(skew && Number.isFinite(skew.put25d) && Number.isFinite(skew.call25d));
+  assert.ok(term && term.nearExpiration === "2026-08-01" && term.farExpiration === "2026-08-15");
+  assert.equal(term.slope, 0); // identical chains at both expirations in this fixture
+  assert.ok(vol && Number.isFinite(vol.atmIv) && Number.isFinite(vol.vrp));
+});
+
+test("computeVolSurface degrades gracefully with no expiration/spot/chain", () => {
+  assert.deepEqual(computeVolSurface({}, null), { skew: null, term: null, vol: null });
+  assert.deepEqual(computeVolSurface({ underlying: { price: 100 } }, "2026-08-01"), { skew: null, term: null, vol: null });
+});
+
+function gexRow(strike, callGamma, putGamma, oi = 500) {
+  return {
+    strike,
+    call: { bid: 1, ask: 1.1, gamma: callGamma, openInterest: oi },
+    put: { bid: 1, ask: 1.1, gamma: putGamma, openInterest: oi },
+  };
+}
+
+test("computeGammaExposure nets positive gamma per-strike into a signed netGex", () => {
+  const snapshot = {
+    underlying: { price: 100 },
+    chains: { "2026-08-01": { strikes: [gexRow(95, 0.03, 0.03), gexRow(100, 0.05, 0.05), gexRow(105, 0.03, 0.03)] } },
+  };
+  const { netGex, zeroGammaStrike, byStrike } = computeGammaExposure(snapshot);
+  assert.equal(byStrike.length, 3);
+  // equal call/put gamma+OI at every strike cancels to exactly zero net gamma
+  assert.equal(netGex, 0);
+  assert.ok([95, 100, 105].includes(zeroGammaStrike));
+});
+
+test("computeGammaExposure skips strikes missing gamma/OI and returns empty when none qualify", () => {
+  const snapshot = {
+    underlying: { price: 100 },
+    chains: { "2026-08-01": { strikes: [{ strike: 100, call: { bid: 1, ask: 1.1 }, put: { bid: 1, ask: 1.1 } }] } },
+  };
+  assert.deepEqual(computeGammaExposure(snapshot), { netGex: null, zeroGammaStrike: null, byStrike: [] });
+  assert.deepEqual(computeGammaExposure({ underlying: {} }), { netGex: null, zeroGammaStrike: null, byStrike: [] });
 });

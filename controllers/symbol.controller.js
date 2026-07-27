@@ -2,9 +2,9 @@ import { readSettings, writeSettings } from "../models/settings.model.js";
 import { listSnapshotSymbols, readSnapshot } from "../models/snapshot.model.js";
 import { normalizeSymbol } from "../services/symbol.service.js";
 
-// The active symbol is what Claude refreshes when asked without naming one,
-// and what every data endpoint falls back to when no ?symbol= is passed. null
-// until the user picks one via PUT /api/symbol (search + "Go" in the client).
+// The active symbol is what POST /api/refresh targets when no ?symbol= is passed,
+// and what every data endpoint falls back to. null until the user picks one via
+// PUT /api/symbol (search + "Go" in the client).
 export async function getSymbol(_req, res) {
   try {
     const settings = await readSettings();

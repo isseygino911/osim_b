@@ -15,6 +15,24 @@ function mkBars(closes) {
   }));
 }
 
+// Intraday fixture: `barsPerDay` bars per calendar day, hourly apart starting at 14:30 UTC
+// (the VWAP session-reset tests need multiple bars within the same day, unlike mkBars'
+// one-bar-per-day shape).
+function mkIntradayBars(closes, barsPerDay) {
+  return closes.map((c, i) => {
+    const day = Math.floor(i / barsPerDay);
+    const hour = i % barsPerDay;
+    return {
+      t: new Date(Date.UTC(2026, 0, 1 + day, 14 + hour, 30)).toISOString(),
+      open: c - 0.3,
+      high: c + 0.5,
+      low: c - 0.5,
+      close: c,
+      volume: 1_000_000,
+    };
+  });
+}
+
 function uptrend(n) {
   return Array.from({ length: n }, (_, i) => 100 + i * 1.5);
 }
@@ -117,4 +135,26 @@ test("StochRSI: no null-poisoning — non-null at the tail of a long series", ()
 test("EMA 9/21/50 track price and are ordered on a strong uptrend", () => {
   const { latest } = computeIndicators(mkBars(uptrend(60)));
   assert.ok(latest.ema9 > latest.ema21 && latest.ema21 > latest.ema50, "expected ema9 > ema21 > ema50 on an uptrend");
+});
+
+test("VWAP: resets at each new session (calendar day) on intraday intervals", () => {
+  const barsPerDay = 6;
+  const bars = mkIntradayBars(uptrend(24), barsPerDay); // 4 days of a rising close
+  const { series } = computeIndicators(bars, "1h");
+  const firstOfDay2 = barsPerDay;
+  const bar = bars[firstOfDay2];
+  const expectedTypical = (bar.high + bar.low + bar.close) / 3;
+  // the first bar of a new session has no prior accumulation, so VWAP == that bar's own
+  // typical price — if it were still cumulative from day 1 it would sit far below this
+  assert.ok(Math.abs(series.vwap[firstOfDay2] - expectedTypical) < 1e-9, `expected session reset at day boundary, got ${series.vwap[firstOfDay2]}`);
+});
+
+test("VWAP: is an all-null series on the 1d interval (degenerate as a session indicator)", () => {
+  const { series } = computeIndicators(mkBars(uptrend(60)), "1d");
+  assert.ok(series.vwap.every((v) => v === null));
+});
+
+test("VWAP: defaults to 1d (all-null) when interval is omitted, for backward compatibility", () => {
+  const { series } = computeIndicators(mkBars(uptrend(60)));
+  assert.ok(series.vwap.every((v) => v === null));
 });

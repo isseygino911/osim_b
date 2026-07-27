@@ -1,5 +1,5 @@
 import { yearFraction } from "./blackScholes.service.js";
-import { assessChain, computeOptionsBias } from "./greeks.service.js";
+import { assessChain, computeGammaExposure, computeOptionsBias, computeVolSurface } from "./greeks.service.js";
 import { candlesFor, computeIndicators } from "./indicators.service.js";
 
 // Risk controls — deliberately aggressive since the stated goal is 10%/week,
@@ -184,6 +184,11 @@ export function computeSignal(snapshot, news) {
     : { bias: 0, factors: null };
   const { verdict, implication } = assessDivergence(newsScore, optionsBias);
 
+  // Volatility surface + dealer gamma exposure — informational context alongside
+  // newsVsOptions, same "never touches combinedScore/action" contract.
+  const volSurface = optionsFactors ? computeVolSurface(snapshot, optionsFactors.expiration) : { skew: null, term: null, vol: null };
+  const gammaExposure = computeGammaExposure(snapshot);
+
   const optionsNote = optionsScore < 0 ? `, options=${optionsScore.toFixed(1)}` : "";
   return {
     action,
@@ -192,6 +197,8 @@ export function computeSignal(snapshot, news) {
     newsScore,
     optionsScore,
     optionsFactors,
+    volSurface,
+    gammaExposure,
     newsVsOptions: {
       newsScore,
       newsSentiment: news?.overall?.sentiment ?? "unknown",

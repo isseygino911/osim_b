@@ -8,6 +8,8 @@ import { refreshRouter } from "./routes/refresh.routes.js";
 import { snapshotRouter } from "./routes/snapshot.routes.js";
 import { symbolRouter } from "./routes/symbol.routes.js";
 import { init as initAutopilot } from "./services/autopilot.service.js";
+import { initAutoRefresh } from "./services/refresh.service.js";
+import { isTradierConfigured } from "./services/tradier.service.js";
 
 const PORT = process.env.PORT || 8787;
 
@@ -36,6 +38,11 @@ app.listen(PORT, async () => {
     await migrateAutopilotLayout();
     await initAutopilot(readSnapshot);
     console.log("[server] Autopilot loop initialized (disabled by default — POST /api/autopilot/enable to start).");
+    if (isTradierConfigured()) {
+      initAutoRefresh();
+    } else {
+      console.log("[server] TRADIER_API_KEY not set — snapshot refresh is disabled until it's added to server/.env.");
+    }
   } catch (e) {
     console.error("[server] Autopilot init failed:", e.message);
   }

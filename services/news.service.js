@@ -1,6 +1,6 @@
 import Parser from "rss-parser";
 
-import { analyzeItems, isEnabled as aiEnabled } from "./newsAI.service.js";
+import { analyzeItems, getUsage as aiUsage, isEnabled as aiEnabled } from "./newsAI.service.js";
 import { compileProfile, RELEVANCE_THRESHOLD, scoreDirection, scoreRelevance } from "./relevance.service.js";
 
 const parser = new Parser({ timeout: 8000 });
@@ -16,7 +16,7 @@ const FEEDS = [
   { source: "Seeking Alpha Market Currents", url: "https://seekingalpha.com/market_currents.xml" },
 ];
 
-const RAW_TTL_MS = 3 * 60 * 1000;
+const RAW_TTL_MS = 10 * 60 * 1000;
 const SCORED_CAP = 10;
 
 // The RSS fan-out is symbol-independent, so raw (unscored) items are cached once
@@ -142,6 +142,7 @@ export async function getNews({ symbol = "QQQ", name = null, forceRefresh = fals
     relevantItems,
     overall: computeOverall(all),
     analysisMode: aiEnabled() ? "gemini" : "heuristic",
+    aiUsage: aiEnabled() ? aiUsage() : null,
     fetchedAt: new Date().toISOString(),
     rawFetchedAt: raw.fetchedAt,
   };
