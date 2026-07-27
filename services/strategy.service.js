@@ -161,7 +161,7 @@ export function assessDivergence(newsScore, optionsBias) {
 export function computeSignal(snapshot, news) {
   const indicators = computeIndicators(candlesFor(snapshot, "1d"));
   if (indicators.insufficientData) {
-    return { action: "hold", reason: "insufficient candle data", indicators, newsScore: 0, combinedScore: 0 };
+    return { action: "hold", reason: "insufficient candle data", indicators, techScore: 0, newsScore: 0, combinedScore: 0 };
   }
   const techScore = indicators.composite.score;
   const newsScore = news?.overall?.score ?? 0;
