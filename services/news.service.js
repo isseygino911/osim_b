@@ -73,13 +73,33 @@ function computeOverall(all) {
     ? 0
     : (pool.reduce((sum, a) => sum + (a.directionScore / 5) * a.relevanceScore, 0) / totalWeight) * 100;
   const score = Number(weighted.toFixed(1));
-  return {
-    sentiment: score > 10 ? "bullish" : score < -10 ? "bearish" : "neutral",
-    score,
-    positive: pool.filter((a) => a.direction === "bullish").length,
-    negative: pool.filter((a) => a.direction === "bearish").length,
-    sampleSize: pool.length,
-  };
+  const positive = pool.filter((a) => a.direction === "bullish").length;
+  const negative = pool.filter((a) => a.direction === "bearish").length;
+  const sentiment = score > 10 ? "bullish" : score < -10 ? "bearish" : "neutral";
+
+  // Same record-a-reason pattern as indicators.service.js's composite score —
+  // explain the count/weight split, then name the highest-relevance headlines
+  // actually driving the score, so "BULLISH (+18)" isn't just a bare number.
+  const reasons = [
+    {
+      factor: "Headline count",
+      direction: positive > negative ? "bullish" : negative > positive ? "bearish" : "neutral",
+      why: `${positive} bullish vs ${negative} bearish headline${pool.length === 1 ? "" : "s"} out of ${pool.length} scored.`,
+    },
+  ];
+  const topDrivers = [...pool]
+    .filter((a) => a.direction !== "neutral")
+    .sort((a, b) => b.relevanceScore - a.relevanceScore)
+    .slice(0, 3);
+  if (topDrivers.length) {
+    reasons.push({
+      factor: "Top drivers",
+      direction: sentiment,
+      why: topDrivers.map((a) => `"${a.title}" (${a.direction}, R${a.relevanceScore})`).join("; "),
+    });
+  }
+
+  return { sentiment, score, positive, negative, sampleSize: pool.length, reasons };
 }
 
 export async function getNews({ symbol = "QQQ", name = null, forceRefresh = false } = {}) {
@@ -93,7 +113,7 @@ export async function getNews({ symbol = "QQQ", name = null, forceRefresh = fals
   const all = raw.items.map((item) => {
     const text = `${item.title} ${item.summary}`;
     const { score: relevanceScore } = scoreRelevance(text, profile);
-    const { direction, score: directionScore } = scoreDirection(text);
+    const { direction, score: directionScore, phrases } = scoreDirection(text);
     return {
       ...item,
       relevanceScore,
@@ -104,7 +124,10 @@ export async function getNews({ symbol = "QQQ", name = null, forceRefresh = fals
       sentiment: direction,
       sentimentScore: directionScore,
       analysisSource: "heuristic",
-      aiReason: null,
+      // Gemini overwrites this with its own reason below when enabled; otherwise this
+      // heuristic fallback names the actual matched phrase(s) so "bullish"/"bearish"
+      // isn't a bare label even without the AI layer.
+      aiReason: phrases.length ? `Matched ${direction} phrase${phrases.length > 1 ? "s" : ""}: ${phrases.map((p) => `"${p}"`).join(", ")}.` : null,
     };
   });
 

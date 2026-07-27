@@ -84,12 +84,50 @@ function computeOptionsScore(snapshot) {
   const chain = expiration ? snapshot.chains?.[expiration] : null;
   if (!chain) return { optionsScore: 0, optionsFactors: null };
 
-  const { atmIv, avgSpreadPct, liquidityOk } = assessChain(chain, spot, { minOpenInterest: RISK.minOpenInterest });
+  const { atmIv, avgSpreadPct, liquidityOk, flags } = assessChain(chain, spot, { minOpenInterest: RISK.minOpenInterest });
   const clamp01 = (x) => Math.min(1, Math.max(0, x));
   const penaltyIv = Number.isFinite(atmIv) ? clamp01((atmIv - 0.35) / 0.35) * 50 : 0; // rich premium hurts long options
   const penaltySpread = Number.isFinite(avgSpreadPct) ? clamp01((avgSpreadPct - 0.02) / 0.08) * 30 : 0;
   const penaltyOi = liquidityOk ? 0 : 20;
   const optionsScore = -Math.min(100, penaltyIv + penaltySpread + penaltyOi);
+
+  // Same record-a-reason pattern as indicators.service.js's composite score — one
+  // entry per penalty (or its absence) so "CONDITIONS -42" is backed by an explicit
+  // list instead of just the raw factor rows already shown in the UI.
+  const reasons = [];
+  if (Number.isFinite(atmIv)) {
+    reasons.push({
+      factor: "Implied volatility",
+      direction: penaltyIv > 0 ? "bearish" : "neutral",
+      why: penaltyIv > 0
+        ? `ATM IV is ${(atmIv * 100).toFixed(0)}% — rich premium, costing ${penaltyIv.toFixed(1)} points off the conditions score since buyers overpay for options here.`
+        : `ATM IV is ${(atmIv * 100).toFixed(0)}% — reasonably priced, no penalty.`,
+    });
+  }
+  if (Number.isFinite(avgSpreadPct)) {
+    reasons.push({
+      factor: "Bid/ask spread",
+      direction: penaltySpread > 0 ? "bearish" : "neutral",
+      why: penaltySpread > 0
+        ? `Average spread is ${(avgSpreadPct * 100).toFixed(1)}% of the option's price — wide, costing ${penaltySpread.toFixed(1)} points since you'd give up more just entering/exiting.`
+        : `Average spread is ${(avgSpreadPct * 100).toFixed(1)}% of the option's price — tight, no penalty.`,
+    });
+  }
+  reasons.push({
+    factor: "Liquidity (open interest)",
+    direction: penaltyOi > 0 ? "bearish" : "neutral",
+    why: penaltyOi > 0
+      ? `Open interest at the at-the-money strike is below the ${RISK.minOpenInterest}-contract floor — thin liquidity, costing ${penaltyOi} points since real fills would likely be worse than the quoted price.`
+      : "Open interest at the at-the-money strike clears the liquidity floor, no penalty.",
+  });
+  if (flags?.length) {
+    reasons.push({
+      factor: "Quality flags",
+      direction: "bearish",
+      why: `${flags.length} flag${flags.length > 1 ? "s" : ""} raised on this chain: ${flags.join(", ")}.`,
+    });
+  }
+
   return {
     optionsScore: Number(optionsScore.toFixed(1)),
     optionsFactors: {
@@ -98,6 +136,7 @@ function computeOptionsScore(snapshot) {
       avgSpreadPct,
       liquidityOk,
       penalties: { iv: Number(penaltyIv.toFixed(1)), spread: Number(penaltySpread.toFixed(1)), oi: penaltyOi },
+      reasons,
     },
   };
 }
@@ -137,23 +176,59 @@ export function previewPicks(snapshot) {
 const DIVERGENCE_NEWS_MIN = 10; // matches the news sentiment band
 const DIVERGENCE_BIAS_MIN = 15;
 
-export function assessDivergence(newsScore, optionsBias) {
+// Same record-a-reason pattern as indicators.service.js's composite score — one
+// entry for the news side, one for the options side, so the verdict is backed by
+// the same two numbers the UI already shows rather than just a canned sentence.
+function divergenceReasons(newsScore, optionsBias, factors) {
+  const reasons = [
+    {
+      factor: "News sentiment",
+      direction: newsScore > 0 ? "bullish" : newsScore < 0 ? "bearish" : "neutral",
+      why: `Headline sentiment scores ${newsScore > 0 ? "+" : ""}${newsScore.toFixed(1)} — ${Math.abs(newsScore) < DIVERGENCE_NEWS_MIN ? "too weak to count as real conviction" : newsScore > 0 ? "leaning bullish" : "leaning bearish"}.`,
+    },
+    {
+      factor: "Options positioning",
+      direction: optionsBias > 0 ? "bullish" : optionsBias < 0 ? "bearish" : "neutral",
+      why: `Options positioning scores ${optionsBias > 0 ? "+" : ""}${optionsBias.toFixed(1)} — ${Math.abs(optionsBias) < DIVERGENCE_BIAS_MIN ? "too weak to count as real conviction" : optionsBias > 0 ? "pricing skewed bullish" : "pricing skewed bearish"}.`,
+    },
+  ];
+  if (Number.isFinite(factors?.ivSkew)) {
+    reasons.push({
+      factor: "25Δ IV skew (put − call)",
+      direction: factors.ivSkew > 0.01 ? "bearish" : factors.ivSkew < -0.01 ? "bullish" : "neutral",
+      why: `Put IV sits ${(factors.ivSkew * 100).toFixed(1)}pts ${factors.ivSkew >= 0 ? "above" : "below"} call IV — ${factors.ivSkew > 0.01 ? "the market is paying up for downside protection" : factors.ivSkew < -0.01 ? "the market is paying up for upside exposure" : "no meaningful skew"}.`,
+    });
+  }
+  if (Number.isFinite(factors?.oiRatio)) {
+    reasons.push({
+      factor: "Put/call open interest",
+      direction: factors.oiRatio > 1.1 ? "bearish" : factors.oiRatio < 0.9 ? "bullish" : "neutral",
+      why: `Put/call open interest ratio is ${factors.oiRatio.toFixed(2)} — ${factors.oiRatio > 1.1 ? "more open interest sits in puts, a hedging/bearish lean" : factors.oiRatio < 0.9 ? "more open interest sits in calls, a bullish lean" : "roughly balanced between puts and calls"}.`,
+    });
+  }
+  return reasons;
+}
+
+export function assessDivergence(newsScore, optionsBias, factors = null) {
+  const reasons = divergenceReasons(newsScore, optionsBias, factors);
   if (Math.abs(newsScore) < DIVERGENCE_NEWS_MIN || Math.abs(optionsBias) < DIVERGENCE_BIAS_MIN) {
-    return { verdict: "neutral", implication: "Neither news flow nor options positioning shows strong conviction." };
+    return { verdict: "neutral", implication: "Neither news flow nor options positioning shows strong conviction.", reasons };
   }
   if (Math.sign(newsScore) === Math.sign(optionsBias)) {
     const lean = newsScore > 0 ? "bullish" : "bearish";
-    return { verdict: "aligned", implication: `News flow and options positioning both lean ${lean} — confirmation.` };
+    return { verdict: "aligned", implication: `News flow and options positioning both lean ${lean} — confirmation.`, reasons };
   }
   if (newsScore > 0) {
     return {
       verdict: "divergent",
       implication: "Headlines lean bullish but options are pricing downside protection — contrarian caution on calls.",
+      reasons,
     };
   }
   return {
     verdict: "divergent",
     implication: "Headlines lean bearish but options positioning looks complacent — downside moves could be sharp; puts relatively cheap.",
+    reasons,
   };
 }
 
@@ -182,7 +257,7 @@ export function computeSignal(snapshot, news) {
   const { bias: optionsBias, factors: biasFactors } = biasChain
     ? computeOptionsBias(biasChain, snapshot.underlying?.price)
     : { bias: 0, factors: null };
-  const { verdict, implication } = assessDivergence(newsScore, optionsBias);
+  const { verdict, implication, reasons: divergenceReasonList } = assessDivergence(newsScore, optionsBias, biasFactors);
 
   // Volatility surface + dealer gamma exposure — informational context alongside
   // newsVsOptions, same "never touches combinedScore/action" contract.
@@ -207,6 +282,7 @@ export function computeSignal(snapshot, news) {
       verdict,
       implication,
       factors: biasFactors,
+      reasons: divergenceReasonList,
     },
     indicators,
     reason: `tech=${techScore.toFixed(1)} (${indicators.composite.label}), news=${newsScore.toFixed(1)} (${news?.overall?.sentiment ?? "unknown"})${optionsNote}`,

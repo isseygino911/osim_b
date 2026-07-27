@@ -332,7 +332,49 @@ export function computeVolSurface(snapshot, expiration) {
         ? { atmIv, realizedVol20d: null, vrp: null }
         : null;
 
-  return { skew, term, vol };
+  // Same record-a-reason pattern as indicators.service.js's composite score — each
+  // structural read (skew, term slope, VRP) gets its own plain-English explanation
+  // instead of the raw numbers being the only thing shown.
+  const reasons = [];
+  if (skew && Number.isFinite(skew.put25d) && Number.isFinite(skew.call25d)) {
+    const skewPts = round(skew.put25d - skew.call25d);
+    const puts25Richer = skewPts > 0.01;
+    const calls25Richer = skewPts < -0.01;
+    reasons.push({
+      factor: "25Δ skew",
+      direction: puts25Richer ? "bearish" : calls25Richer ? "bullish" : "neutral",
+      why: puts25Richer
+        ? `25Δ puts (${(skew.put25d * 100).toFixed(1)}%) are priced richer than 25Δ calls (${(skew.call25d * 100).toFixed(1)}%) — the market is paying up for downside protection.`
+        : calls25Richer
+          ? `25Δ calls (${(skew.call25d * 100).toFixed(1)}%) are priced richer than 25Δ puts (${(skew.put25d * 100).toFixed(1)}%) — the market is paying up for upside exposure.`
+          : `25Δ put (${(skew.put25d * 100).toFixed(1)}%) and call (${(skew.call25d * 100).toFixed(1)}%) IV are close — no meaningful skew either way.`,
+    });
+  }
+  if (term) {
+    const contango = term.slope >= 0;
+    reasons.push({
+      factor: "Term structure",
+      direction: contango ? "neutral" : "bearish",
+      why: contango
+        ? `Farther-dated IV (${(term.farAtmIv * 100).toFixed(0)}%, ${term.farExpiration}) is at/above near-dated IV (${(term.nearAtmIv * 100).toFixed(0)}%, ${term.nearExpiration}) — contango, the normal/calm shape where longer-dated uncertainty costs a bit more.`
+        : `Farther-dated IV (${(term.farAtmIv * 100).toFixed(0)}%, ${term.farExpiration}) is below near-dated IV (${(term.nearAtmIv * 100).toFixed(0)}%, ${term.nearExpiration}) — inverted, a shape that usually means near-term stress (e.g. an upcoming event) is being priced in.`,
+    });
+  }
+  if (vol && Number.isFinite(vol.vrp)) {
+    const richer = vol.vrp > 0.01;
+    const cheaper = vol.vrp < -0.01;
+    reasons.push({
+      factor: "Volatility risk premium",
+      direction: richer ? "bearish" : cheaper ? "bullish" : "neutral",
+      why: richer
+        ? `ATM IV (${(vol.atmIv * 100).toFixed(0)}%) is above the last 20 days' realized vol (${(vol.realizedVol20d * 100).toFixed(0)}%) — options are pricing in more movement than has actually happened, i.e. richer than realized; buyers are paying a premium.`
+        : cheaper
+          ? `ATM IV (${(vol.atmIv * 100).toFixed(0)}%) is below the last 20 days' realized vol (${(vol.realizedVol20d * 100).toFixed(0)}%) — options are pricing in less movement than has actually happened, i.e. cheaper than realized; a relatively good entry for buyers.`
+          : `ATM IV (${(vol.atmIv * 100).toFixed(0)}%) is roughly in line with realized vol (${(vol.realizedVol20d * 100).toFixed(0)}%) — no meaningful premium either way.`,
+    });
+  }
+
+  return { skew, term, vol, reasons };
 }
 
 // Net dealer gamma exposure (GEX), SqueezeMetrics-style convention: sum of
@@ -385,5 +427,34 @@ export function computeGammaExposure(snapshot) {
     }
   }
 
-  return { netGex, zeroGammaStrike, byStrike };
+  // Same record-a-reason pattern as indicators.service.js's composite score —
+  // explain the regime call and name the strikes actually driving it.
+  const reasons = [];
+  const dampening = netGex >= 0;
+  reasons.push({
+    factor: "Net dealer gamma",
+    direction: dampening ? "neutral" : "bearish",
+    why: dampening
+      ? `Net GEX is positive (${(netGex / 1e6).toFixed(2)}M) — dealers are estimated net long gamma, so their hedging (buying dips, selling rallies) tends to dampen moves and pin price near high-OI strikes.`
+      : `Net GEX is negative (${(netGex / 1e6).toFixed(2)}M) — dealers are estimated net short gamma, so their hedging (selling into drops, buying into rallies) tends to amplify moves rather than dampen them.`,
+  });
+  const topStrikes = [...byStrike].sort((a, b) => Math.abs(b.gex) - Math.abs(a.gex)).slice(0, 2);
+  if (topStrikes.length) {
+    reasons.push({
+      factor: "Largest strikes",
+      direction: "neutral",
+      why: `Strike ${topStrikes[0].strike} carries the largest single exposure (${(topStrikes[0].gex / 1e6).toFixed(2)}M)${
+        topStrikes[1] ? `, followed by ${topStrikes[1].strike} (${(topStrikes[1].gex / 1e6).toFixed(2)}M)` : ""
+      } — these strikes are where dealer hedging flow would be most concentrated.`,
+    });
+  }
+  if (zeroGammaStrike != null) {
+    reasons.push({
+      factor: "Zero-gamma flip",
+      direction: "neutral",
+      why: `Cumulative gamma crosses zero near strike ${zeroGammaStrike} — price moving to the other side of this level would flip the dampening/amplifying regime.`,
+    });
+  }
+
+  return { netGex, zeroGammaStrike, byStrike, reasons };
 }
