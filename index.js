@@ -13,8 +13,27 @@ import { isTradierConfigured } from "./services/tradier.service.js";
 
 const PORT = process.env.PORT || 8787;
 
+const DEFAULT_ALLOWED_ORIGINS = [
+  "http://localhost:5173",
+  "http://localhost:3000",
+  "https://osim.isseylab.com",
+];
+const ALLOWED_ORIGINS = process.env.CORS_ORIGIN
+  ? process.env.CORS_ORIGIN.split(",").map((origin) => origin.trim())
+  : DEFAULT_ALLOWED_ORIGINS;
+
 const app = express();
-app.use(cors());
+app.use(
+  cors({
+    origin(origin, callback) {
+      // No Origin header (curl, server-to-server, same-origin) — allow.
+      if (!origin || ALLOWED_ORIGINS.includes(origin)) {
+        return callback(null, true);
+      }
+      callback(new Error(`Origin ${origin} not allowed by CORS`));
+    },
+  }),
+);
 app.use(express.json({ limit: "2mb" }));
 
 app.use(snapshotRouter);
