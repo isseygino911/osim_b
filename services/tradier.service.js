@@ -1,6 +1,9 @@
 // Direct Tradier REST integration backing POST /api/refresh — a plain in-process fetch
 // chain (single-digit seconds). Requires TRADIER_API_KEY in server/.env; every export
 // here throws if it's unset.
+//
+// Candle intervals: 5m is fetched natively; 15m/30m/1h/4h are all aggregated from that
+// single 5m series (see fetchCandles) rather than separate Tradier round-trips.
 
 const BASE_URL = "https://api.tradier.com/v1";
 const DTE_MIN_DAYS = 3;
@@ -119,9 +122,20 @@ function ymd(date) {
   return date.toISOString().slice(0, 10);
 }
 
+// A full year of daily bars, with margin — covers the "1y" client date-range option.
+const DAILY_LOOKBACK_DAYS = 400;
+
+// Tradier's /markets/timesales rejects any start date older than ~2 calendar months
+// back (confirmed empirically: a 3-month-back start is rejected with "Invalid
+// parameter, start: must be on or after <date>"). This is the real ceiling for every
+// intraday interval (5m/15m/30m/1h/4h) — none of them can ever serve the "3m" or "1y"
+// client date-range options, which fall back to daily candles instead (see
+// snapshot.controller.js's getIndicators / the client's range picker).
+const INTRADAY_LOOKBACK_DAYS = 58;
+
 async function fetchDailyCandles(symbol) {
   const end = new Date();
-  const start = new Date(end.getTime() - 100 * 24 * 60 * 60 * 1000);
+  const start = new Date(end.getTime() - DAILY_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
   const data = await tradierGet("/markets/history", {
     symbol,
     interval: "daily",
@@ -133,15 +147,15 @@ async function fetchDailyCandles(symbol) {
   return all.map((d) => ({ t: `${d.date}T00:00:00Z`, open: d.open, high: d.high, low: d.low, close: d.close, volume: d.volume }));
 }
 
-// Tradier's intraday granularity tops out at 15min (timesales); 30m/1h are built by
-// aggregating the 15min bars rather than a second, redundant round-trip per interval.
-async function fetch15mCandles(symbol, days) {
+// Tradier natively supports 1min/5min/15min timesales bars; 30m/1h/4h are built by
+// aggregating the 5min bars rather than a separate round-trip per interval.
+async function fetchIntradayCandles(symbol, interval, days) {
   const end = new Date();
   const start = new Date(end.getTime() - days * 24 * 60 * 60 * 1000);
   const fmt = (d) => d.toISOString().slice(0, 16).replace("T", " ");
   const data = await tradierGet("/markets/timesales", {
     symbol,
-    interval: "15min",
+    interval,
     start: fmt(start),
     end: fmt(end),
     session_filter: "open",
@@ -169,12 +183,19 @@ export function aggregateCandles(bars, groupSize) {
 }
 
 async function fetchCandles(symbol) {
-  const [daily, fifteenMin] = await Promise.all([fetchDailyCandles(symbol), fetch15mCandles(symbol, 5)]);
+  const [daily, fiveMin] = await Promise.all([
+    fetchDailyCandles(symbol),
+    fetchIntradayCandles(symbol, "5min", INTRADAY_LOOKBACK_DAYS),
+  ]);
+  const fifteenMin = aggregateCandles(fiveMin, 3);
+  const oneHour = aggregateCandles(fifteenMin, 4);
   return {
     "1d": daily,
-    "1h": aggregateCandles(fifteenMin, 4),
+    "4h": aggregateCandles(oneHour, 4),
+    "1h": oneHour,
     "30m": aggregateCandles(fifteenMin, 2),
     "15m": fifteenMin,
+    "5m": fiveMin,
   };
 }
 

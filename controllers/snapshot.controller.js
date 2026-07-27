@@ -106,7 +106,7 @@ export async function getChain(req, res) {
   }
 }
 
-const CANDLE_INTERVALS = ["15m", "30m", "1h", "1d"];
+const CANDLE_INTERVALS = ["5m", "15m", "30m", "1h", "4h", "1d"];
 
 // Technical indicators computed from whatever snapshot is currently on disk.
 export async function getIndicators(req, res) {

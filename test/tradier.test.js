@@ -81,6 +81,29 @@ test("aggregateCandles drops a trailing partial group's fields correctly (uses w
   assert.equal(grouped[0].volume, 50);
 });
 
+test("aggregateCandles chains correctly for 5m -> 15m -> 1h -> 4h (groupSizes 3, 4, 4)", () => {
+  // 48 5-minute bars = 4 hours of 5m data; verifies the same chained-aggregation shape
+  // fetchCandles uses (5m fetched natively, everything else derived from it) rolls up
+  // to exactly one 4h bar with volume conserved end-to-end.
+  const fiveMin = Array.from({ length: 48 }, (_, i) => ({
+    t: new Date(Date.UTC(2026, 6, 25, 13, 30 + i * 5)).toISOString(),
+    open: 100 + i,
+    high: 100 + i + 1,
+    low: 100 + i - 1,
+    close: 100 + i + 0.5,
+    volume: 10,
+  }));
+  const fifteenMin = aggregateCandles(fiveMin, 3);
+  const oneHour = aggregateCandles(fifteenMin, 4);
+  const fourHour = aggregateCandles(oneHour, 4);
+  assert.equal(fifteenMin.length, 16);
+  assert.equal(oneHour.length, 4);
+  assert.equal(fourHour.length, 1);
+  assert.equal(fourHour[0].volume, 480); // 48 bars * 10, conserved through every rollup
+  assert.equal(fourHour[0].open, fiveMin[0].open);
+  assert.equal(fourHour[0].close, fiveMin[fiveMin.length - 1].close);
+});
+
 test("isTradierConfigured reflects TRADIER_API_KEY presence", () => {
   const original = process.env.TRADIER_API_KEY;
   delete process.env.TRADIER_API_KEY;
