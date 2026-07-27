@@ -316,27 +316,61 @@ export function computeIndicators(bars, interval = "1d") {
   const lastMinusDI = last(adxRes.minusDI);
 
   // Composite scoring: each signal votes -1..+1, averaged into one -100..+100 score.
+  // Every vote is recorded alongside a plain-English reason so the composite label
+  // (STRONG BUY/SELL/etc.) can be explained, not just stated.
   const votes = [];
-  if (lastRsi != null) votes.push(lastRsi < 30 ? 1 : lastRsi > 70 ? -1 : (50 - lastRsi) / 20);
-  if (lastMacd != null && lastSignal != null) votes.push(lastMacd > lastSignal ? 1 : -1);
-  if (lastSma20 != null && lastSma50 != null) votes.push(lastSma20 > lastSma50 ? 1 : -1);
-  if (lastBBUpper != null && lastBBLower != null) {
-    if (price <= lastBBLower) votes.push(1);
-    else if (price >= lastBBUpper) votes.push(-1);
-    else votes.push(0);
+  const reasons = [];
+  const record = (indicator, vote, why) => {
+    votes.push(vote);
+    reasons.push({ indicator, vote: Number(vote.toFixed(2)), direction: vote > 0 ? "bullish" : vote < 0 ? "bearish" : "neutral", why });
+  };
+
+  if (lastRsi != null) {
+    if (lastRsi < 30) record("RSI (14)", 1, `RSI is ${lastRsi.toFixed(1)}, below 30 — oversold, often precedes a bounce.`);
+    else if (lastRsi > 70) record("RSI (14)", -1, `RSI is ${lastRsi.toFixed(1)}, above 70 — overbought, often precedes a pullback.`);
+    else record("RSI (14)", (50 - lastRsi) / 20, `RSI is ${lastRsi.toFixed(1)}, in the neutral 30-70 band; leans slightly ${lastRsi < 50 ? "bullish" : "bearish"} since it's ${lastRsi < 50 ? "below" : "above"} the midpoint 50.`);
   }
-  if (lastK != null && lastD != null) votes.push(lastK < 20 ? 1 : lastK > 80 ? -1 : lastK > lastD ? 0.3 : -0.3);
-  if (lastVwap != null) votes.push(price > lastVwap ? 0.5 : -0.5);
+  if (lastMacd != null && lastSignal != null) {
+    const above = lastMacd > lastSignal;
+    record("MACD", above ? 1 : -1, `MACD line (${lastMacd.toFixed(2)}) is ${above ? "above" : "below"} its signal line (${lastSignal.toFixed(2)}) — momentum is ${above ? "picking up to the upside" : "fading to the downside"}.`);
+  }
+  if (lastSma20 != null && lastSma50 != null) {
+    const above = lastSma20 > lastSma50;
+    record("SMA 20/50", above ? 1 : -1, `The 20-period average (${lastSma20.toFixed(2)}) is ${above ? "above" : "below"} the 50-period average (${lastSma50.toFixed(2)}) — the shorter-term trend is ${above ? "up" : "down"} relative to the longer-term one.`);
+  }
+  if (lastBBUpper != null && lastBBLower != null) {
+    if (price <= lastBBLower) record("Bollinger Bands", 1, `Price (${price.toFixed(2)}) is at/below the lower band (${lastBBLower.toFixed(2)}) — stretched to the downside, a mean-reversion bounce is more likely.`);
+    else if (price >= lastBBUpper) record("Bollinger Bands", -1, `Price (${price.toFixed(2)}) is at/above the upper band (${lastBBUpper.toFixed(2)}) — stretched to the upside, a mean-reversion pullback is more likely.`);
+    else record("Bollinger Bands", 0, `Price (${price.toFixed(2)}) sits inside the bands (${lastBBLower.toFixed(2)}-${lastBBUpper.toFixed(2)}) — no extreme, no vote either way.`);
+  }
+  if (lastK != null && lastD != null) {
+    if (lastK < 20) record("Stochastic", 1, `Stochastic %K is ${lastK.toFixed(1)}, below 20 — oversold.`);
+    else if (lastK > 80) record("Stochastic", -1, `Stochastic %K is ${lastK.toFixed(1)}, above 80 — overbought.`);
+    else if (lastK > lastD) record("Stochastic", 0.3, `Stochastic %K (${lastK.toFixed(1)}) is above %D (${lastD.toFixed(1)}) — mild upward momentum, but not in an extreme zone.`);
+    else record("Stochastic", -0.3, `Stochastic %K (${lastK.toFixed(1)}) is below %D (${lastD.toFixed(1)}) — mild downward momentum, but not in an extreme zone.`);
+  }
+  if (lastVwap != null) {
+    const above = price > lastVwap;
+    record("VWAP", above ? 0.5 : -0.5, `Price (${price.toFixed(2)}) is trading ${above ? "above" : "below"} session VWAP (${lastVwap.toFixed(2)}) — the average trader today is ${above ? "underwater, favoring buyers" : "in profit, favoring sellers"}.`);
+  }
   // ADX itself is non-directional (trend strength only); the DI cross supplies direction,
   // gated by ADX>=25 so a choppy/sideways market doesn't cast a vote at all. Weighted below
   // the +/-1 votes since DI crosses are noisier. StochRSI deliberately does NOT vote here —
   // it's a derivative of RSI, which already votes, and would triple-count the same momentum.
   if (lastAdx != null && lastPlusDI != null && lastMinusDI != null) {
-    votes.push(lastAdx >= 25 ? (lastPlusDI > lastMinusDI ? 0.75 : -0.75) : 0);
+    if (lastAdx >= 25) {
+      const bullish = lastPlusDI > lastMinusDI;
+      record("ADX/DI", bullish ? 0.75 : -0.75, `ADX is ${lastAdx.toFixed(1)} (>=25, a real trend) and +DI (${lastPlusDI.toFixed(1)}) is ${bullish ? "above" : "below"} -DI (${lastMinusDI.toFixed(1)}) — trending ${bullish ? "up" : "down"}.`);
+    } else {
+      record("ADX/DI", 0, `ADX is ${lastAdx.toFixed(1)}, below 25 — no established trend, so the +DI/-DI cross is ignored.`);
+    }
   }
 
   const score = votes.length ? (votes.reduce((a, b) => a + b, 0) / votes.length) * 100 : 0;
   const label = score >= 40 ? "strong_buy" : score >= 12 ? "buy" : score <= -40 ? "strong_sell" : score <= -12 ? "sell" : "neutral";
+  const topDrivers = reasons
+    .filter((r) => r.direction !== "neutral")
+    .sort((a, b) => Math.abs(b.vote) - Math.abs(a.vote));
 
   return {
     series: {
@@ -387,6 +421,6 @@ export function computeIndicators(bars, interval = "1d") {
       stochRsiK: last(stochRsiRes.k),
       stochRsiD: last(stochRsiRes.d),
     },
-    composite: { score: Number(score.toFixed(1)), label },
+    composite: { score: Number(score.toFixed(1)), label, reasons, topDrivers },
   };
 }

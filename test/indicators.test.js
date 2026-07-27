@@ -63,6 +63,34 @@ test("new series/latest keys are present", () => {
   assert.ok(["strong_buy", "buy", "neutral", "sell", "strong_sell"].includes(composite.label));
 });
 
+test("composite.reasons: one entry per casting indicator, each with a direction and a why", () => {
+  const { composite } = computeIndicators(mkBars(uptrend(60)));
+  assert.ok(composite.reasons.length > 0);
+  for (const r of composite.reasons) {
+    assert.ok(typeof r.indicator === "string" && r.indicator.length > 0);
+    assert.ok(["bullish", "bearish", "neutral"].includes(r.direction));
+    assert.ok(typeof r.why === "string" && r.why.length > 0);
+    assert.ok(Number.isFinite(r.vote));
+  }
+});
+
+test("composite.reasons: SMA 20/50 crossover reasoning matches the trend direction", () => {
+  const up = computeIndicators(mkBars(uptrend(60))).composite;
+  const down = computeIndicators(mkBars(downtrend(60))).composite;
+  const upSma = up.reasons.find((r) => r.indicator === "SMA 20/50");
+  const downSma = down.reasons.find((r) => r.indicator === "SMA 20/50");
+  assert.equal(upSma.direction, "bullish");
+  assert.equal(downSma.direction, "bearish");
+});
+
+test("composite.topDrivers: sorted by |vote| descending and excludes neutral votes", () => {
+  const { composite } = computeIndicators(mkBars(oscillating(60)));
+  assert.ok(composite.topDrivers.every((r) => r.direction !== "neutral"));
+  for (let i = 1; i < composite.topDrivers.length; i++) {
+    assert.ok(Math.abs(composite.topDrivers[i - 1].vote) >= Math.abs(composite.topDrivers[i].vote));
+  }
+});
+
 test("ADX: strong uptrend has high ADX and +DI > -DI", () => {
   const { series } = computeIndicators(mkBars(uptrend(60)));
   const a = last(series.adx14);
