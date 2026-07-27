@@ -1,5 +1,6 @@
 import { Router } from "express";
 import {
+  deleteAutopilotEndpoint,
   disableAutopilot,
   enableAutopilot,
   getAutopilot,
@@ -14,3 +15,4 @@ autopilotRouter.post("/api/autopilot/enable", enableAutopilot);
 autopilotRouter.post("/api/autopilot/disable", disableAutopilot);
 autopilotRouter.post("/api/autopilot/run-now", runAutopilotNow);
 autopilotRouter.post("/api/autopilot/reset", resetAutopilot);
+autopilotRouter.delete("/api/autopilot", deleteAutopilotEndpoint);

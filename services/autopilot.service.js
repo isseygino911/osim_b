@@ -1,4 +1,4 @@
-import { listAutopilotSymbols, readAutopilotState, writeAutopilotState } from "../models/autopilot.model.js";
+import { deleteAutopilotState, listAutopilotSymbols, readAutopilotState, writeAutopilotState } from "../models/autopilot.model.js";
 import { enrichSnapshot } from "./greeks.service.js";
 import { getNews } from "./news.service.js";
 import { computeSignal, decideExits, decideTrade } from "./strategy.service.js";
@@ -234,9 +234,20 @@ async function tick(readSnapshot) {
   }
 }
 
+// Paused: the 60s decision loop kept every enabled/holding symbol trading regardless
+// of whether its underlying snapshot was still being auto-refreshed (see refresh.service.js's
+// AUTO_REFRESH_ENABLED). AUTOPILOT_LOOP_ENABLED gates the timer; tick/LOOP_INTERVAL_MS/timer
+// stay wired up so flipping this back to true is the only change needed to re-enable it.
+// setEnabled/triggerRun (manual "run now" style calls) still run a single pass on demand.
+const AUTOPILOT_LOOP_ENABLED = false;
+
 export async function init(readSnapshot) {
   for (const symbol of await listAutopilotSymbols()) {
     await loadState(symbol);
+  }
+  if (!AUTOPILOT_LOOP_ENABLED) {
+    console.log("[autopilot] decision loop is paused — enable/reset/run-now still work on demand.");
+    return;
   }
   if (timer) clearInterval(timer);
   timer = setInterval(() => {
@@ -261,4 +272,12 @@ export async function resetState(symbol) {
   states.set(symbol, freshState(symbol));
   await persist(symbol);
   return getStatus(symbol);
+}
+
+// Wipes a symbol's autopilot portfolio entirely (in-memory + on-disk) — used when
+// switching to a single-symbol-at-a-time workflow, unlike resetState which keeps the
+// file around with a fresh $10k balance.
+export async function deleteState(symbol) {
+  states.delete(symbol);
+  await deleteAutopilotState(symbol);
 }

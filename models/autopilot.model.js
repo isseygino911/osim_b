@@ -28,6 +28,16 @@ export async function writeAutopilotState(symbol, state) {
   await fs.rename(tmpPath, filePath);
 }
 
+// Deletes the stored autopilot portfolio so no trace of that symbol's trading history
+// remains. Not an error if there's nothing to delete.
+export async function deleteAutopilotState(symbol) {
+  try {
+    await fs.unlink(autopilotPath(symbol));
+  } catch (e) {
+    if (e.code !== "ENOENT") throw e;
+  }
+}
+
 export async function listAutopilotSymbols() {
   try {
     const files = await fs.readdir(AUTOPILOT_DIR);

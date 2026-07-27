@@ -54,3 +54,14 @@ export async function resetAutopilot(req, res) {
     res.status(500).json({ error: e.message });
   }
 }
+
+export async function deleteAutopilotEndpoint(req, res) {
+  const symbol = await resolveSymbol(req.query.symbol);
+  if (!symbol) return res.status(400).json({ error: "Invalid symbol" });
+  try {
+    await autopilotService.deleteState(symbol);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+}

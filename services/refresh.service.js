@@ -76,7 +76,18 @@ async function autoRefreshTick() {
   }
 }
 
+// Paused: background auto-refresh was burning too many Tradier calls (every symbol
+// with a snapshot got refetched every 3min, regardless of whether anyone was still
+// looking at it or autopilot was trading it). AUTO_REFRESH_ENABLED gates the timer;
+// autoRefreshTick/AUTO_REFRESH_INTERVAL_MS/autoRefreshTimer are left wired up so
+// flipping this back to true is the only change needed to re-enable the loop.
+const AUTO_REFRESH_ENABLED = false;
+
 export function initAutoRefresh() {
+  if (!AUTO_REFRESH_ENABLED) {
+    console.log("[refresh] Tradier auto-refresh loop is paused — use manual refresh instead.");
+    return;
+  }
   if (!isTradierConfigured()) return;
   if (autoRefreshTimer) clearInterval(autoRefreshTimer);
   autoRefreshTimer = setInterval(() => {
