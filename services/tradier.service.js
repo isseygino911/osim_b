@@ -131,7 +131,7 @@ const DAILY_LOOKBACK_DAYS = 400;
 // intraday interval (5m/15m/30m/1h/4h) — none of them can ever serve the "3m" or "1y"
 // client date-range options, which fall back to daily candles instead (see
 // snapshot.controller.js's getIndicators / the client's range picker).
-const INTRADAY_LOOKBACK_DAYS = 58;
+const INTRADAY_LOOKBACK_DAYS = 50;
 
 async function fetchDailyCandles(symbol) {
   const end = new Date();
