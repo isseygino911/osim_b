@@ -4,6 +4,7 @@ import { assessChain, computeGammaExposure, computeVolSurface, DEFAULT_RISK_FREE
 import { candlesFor, computeIndicators } from "../services/indicators.service.js";
 import { getIvStats, recordIvSample } from "../services/ivRank.service.js";
 import { getNews } from "../services/news.service.js";
+import { computeSmc } from "../services/smc.service.js";
 import { computeSignal, previewPicks, RISK } from "../services/strategy.service.js";
 import { normalizeSymbol, resolveSymbol } from "../services/symbol.service.js";
 
@@ -118,9 +119,12 @@ export async function getIndicators(req, res) {
   }
   try {
     const snap = await readSnapshot(symbol);
-    const ind = computeIndicators(candlesFor(snap, interval), interval);
+    const candles = candlesFor(snap, interval);
+    const ind = computeIndicators(candles, interval);
     const iv = await getIvStats(symbol).catch(() => null);
-    res.json({ ...ind, iv });
+    // SMC rides alongside `series` rather than inside it: its anchors are timestamps, not
+    // per-bar values, so it must skip the client's index-based date-range slicing.
+    res.json({ ...ind, smc: computeSmc(candles), iv });
   } catch (e) {
     if (e.code === "ENOENT") return res.status(404).json({ error: `No snapshot for ${symbol} yet.` });
     res.status(500).json({ error: e.message });
